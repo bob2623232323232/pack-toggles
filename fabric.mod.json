@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "packtoggles",
+  "version": "${version}",
+  "name": "Pack Toggles",
+  "description": "Turn parts of a big resource pack on and off in-game (press J).",
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": { "client": ["dev.packtoggles.PackTogglesClient"] },
+  "depends": { "fabricloader": ">=0.16.0", "minecraft": "~1.21.11", "java": ">=21", "fabric-api": "*" }
+}
