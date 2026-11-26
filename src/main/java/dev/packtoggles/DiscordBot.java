@@ -1,0 +1,193 @@
+package dev.packtoggles;
+
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+
+import java.io.ByteArrayOutputStream;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.time.Duration;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.Deque;
+import java.util.List;
+import java.util.Locale;
+
+/**
+ * Tiny Discord bot over the REST API (no extra libraries): posts trims and skins to a channel and
+ * answers !commands by polling that channel every few seconds.
+ * The bot needs "Message Content Intent" enabled in the Discord developer portal to read commands.
+ * The token is never logged.
+ */
+public final class DiscordBot {
+    static volatile String token = "", channelId = "", userId = "";
+    static volatile boolean listen = true, autoPost = false;
+
+    private static volatile boolean running = false;
+    private static volatile String status = "Offline";
+    private static final Deque<String> LOG = new ArrayDeque<>();
+    private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
+    private static Thread thread;
+    private static String lastId = null;
+    private static boolean warnedIntent = false;
+
+    private DiscordBot() { }
+
+    static boolean isRunning() { return running; }
+
+    static String status() { return status; }
+
+    static synchronized List<String> log() { return new ArrayList<>(LOG); }
+
+    static synchronized void log(String s) {
+        LOG.addLast(new SimpleDateFormat("HH:mm:ss").format(new Date()) + "  " + s);
+        while (LOG.size() > 40) LOG.removeFirst();
+    }
+
+    static synchronized void start() {
+        if (running) return;
+        if (token.isBlank() || channelId.isBlank()) { log("Enter a bot token and channel ID first"); return; }
+        running = true;
+        lastId = null;
+        status = "Connecting...";
+        thread = new Thread(DiscordBot::loop, "trimstudio-discord");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    static synchronized void stop() {
+        running = false;
+        status = "Offline";
+        if (thread != null) thread.interrupt();
+        log("Disconnected");
+    }
+
+    // ---------------- REST ----------------
+    private static HttpRequest.Builder req(String path) {
+        return HttpRequest.newBuilder(URI.create("https://discord.com/api/v10" + path))
+                .timeout(Duration.ofSeconds(15))
+                .header("Authorization", "Bot " + token.trim())
+                .header("User-Agent", "DiscordBot (https://modrinth.com, 1.0)");
+    }
+
+    private static String me() throws Exception {
+        HttpResponse<String> r = HTTP.send(req("/users/@me").GET().build(), HttpResponse.BodyHandlers.ofString());
+        if (r.statusCode() != 200) throw new Exception("HTTP " + r.statusCode() + " (check the bot token)");
+        return JsonParser.parseString(r.body()).getAsJsonObject().get("username").getAsString();
+    }
+
+    private static void post(String content) throws Exception {
+        JsonObject o = new JsonObject();
+        o.addProperty("content", content.length() > 1900 ? content.substring(0, 1900) : content);
+        HttpResponse<String> r = HTTP.send(req("/channels/" + channelId.trim() + "/messages")
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(o.toString())).build(), HttpResponse.BodyHandlers.ofString());
+        if (r.statusCode() / 100 != 2) throw new Exception("HTTP " + r.statusCode() + " while sending");
+    }
+
+    private static void postFile(String content, String name, byte[] data) throws Exception {
+        String b = "----trimstudio" + System.nanoTime();
+        JsonObject o = new JsonObject();
+        o.addProperty("content", content);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(("--" + b + "\r\nContent-Disposition: form-data; name=\"payload_json\"\r\nContent-Type: application/json\r\n\r\n" + o + "\r\n").getBytes(StandardCharsets.UTF_8));
+        out.write(("--" + b + "\r\nContent-Disposition: form-data; name=\"files[0]\"; filename=\"" + name + "\"\r\nContent-Type: image/png\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+        out.write(data);
+        out.write(("\r\n--" + b + "--\r\n").getBytes(StandardCharsets.UTF_8));
+        HttpResponse<String> r = HTTP.send(req("/channels/" + channelId.trim() + "/messages")
+                .header("Content-Type", "multipart/form-data; boundary=" + b)
+                .POST(HttpRequest.BodyPublishers.ofByteArray(out.toByteArray())).build(), HttpResponse.BodyHandlers.ofString());
+        if (r.statusCode() / 100 != 2) throw new Exception("HTTP " + r.statusCode() + " while uploading");
+    }
+
+    /** Fire-and-forget helpers used by the UI. */
+    static void sendText(String text) {
+        async(() -> { post(text); log("Sent trim to Discord"); });
+    }
+
+    static void sendFile(String text, String name, byte[] data) {
+        async(() -> { postFile(text, name, data); log("Sent " + name + " to Discord"); });
+    }
+
+    private interface Job { void run() throws Exception; }
+
+    private static void async(Job j) {
+        if (token.isBlank() || channelId.isBlank()) { log("Enter a bot token and channel ID first"); return; }
+        Thread t = new Thread(() -> {
+            try { j.run(); } catch (Exception e) { log("Failed: " + e.getMessage()); }
+        }, "trimstudio-discord-send");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    // ---------------- polling ----------------
+    private static void loop() {
+        try {
+            String name = me();
+            status = "Online as " + name;
+            log("Connected as " + name);
+        } catch (Exception e) {
+            status = "Offline";
+            running = false;
+            log("Connect failed: " + e.getMessage());
+            return;
+        }
+        while (running) {
+            try {
+                if (listen) poll();
+                Thread.sleep(4000);
+            } catch (InterruptedException ie) {
+                break;
+            } catch (Exception e) {
+                log("Error: " + e.getMessage());
+                try { Thread.sleep(8000); } catch (InterruptedException ie) { break; }
+            }
+        }
+        status = "Offline";
+    }
+
+    private static void poll() throws Exception {
+        String path = "/channels/" + channelId.trim() + "/messages?limit=" + (lastId == null ? 1 : 20) + (lastId == null ? "" : "&after=" + lastId);
+        HttpResponse<String> r = HTTP.send(req(path).GET().build(), HttpResponse.BodyHandlers.ofString());
+        if (r.statusCode() == 429) { Thread.sleep(3000); return; }
+        if (r.statusCode() != 200) { log("Could not read the channel: HTTP " + r.statusCode()); Thread.sleep(6000); return; }
+        JsonArray arr = JsonParser.parseString(r.body()).getAsJsonArray();
+        if (lastId == null) {
+            lastId = arr.size() > 0 ? arr.get(0).getAsJsonObject().get("id").getAsString() : "0";
+            return;
+        }
+        if (arr.size() == 0) return;
+        lastId = arr.get(0).getAsJsonObject().get("id").getAsString();
+        for (int i = arr.size() - 1; i >= 0; i--) {
+            JsonObject m = arr.get(i).getAsJsonObject();
+            JsonObject author = m.getAsJsonObject("author");
+            if (author.has("bot") && author.get("bot").getAsBoolean()) continue;
+            if (!userId.isBlank() && !author.get("id").getAsString().equals(userId.trim())) continue;
+            String content = m.get("content").getAsString().trim();
+            if (content.isEmpty()) {
+                if (!warnedIntent) { warnedIntent = true; log("Messages look empty: enable Message Content Intent for the bot"); }
+                continue;
+            }
+            if (content.startsWith("!")) handle(content);
+        }
+    }
+
+    private static void handle(String content) throws Exception {
+        String[] parts = content.split("\\s+", 2);
+        String cmd = parts[0].toLowerCase(Locale.ROOT), args = parts.length > 1 ? parts[1] : "";
+        switch (cmd) {
+            case "!help" -> post("Commands: `!trim`, `!skin`, `!random`, `!set <armor> <pattern> <material>`, `!help`");
+            case "!trim" -> { post(ToggleScreen.loadoutText()); log("Answered !trim"); }
+            case "!skin" -> { postFile("Current skin from Trim Studio", "skin.png", ToggleScreen.skinPng()); log("Answered !skin"); }
+            case "!random" -> { ToggleScreen.randomTrim(); post(ToggleScreen.loadoutText()); log("Answered !random"); }
+            case "!set" -> { post(ToggleScreen.setLoadout(args)); log("Answered !set"); }
+            default -> { }
+        }
+    }
+}
