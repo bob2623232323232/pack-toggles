@@ -24,6 +24,8 @@ public record Group(String id, String label, List<String> prefixes) {
         g("items", "Items (definitions, models, textures)",
             "assets/minecraft/items/", "assets/minecraft/models/item/", "assets/minecraft/textures/item/"),
         g("gui", "GUI textures", "assets/minecraft/textures/gui/"),
+        g("trims", "Armor trims (patterns, materials)",
+            "assets/minecraft/textures/trims/", "assets/minecraft/atlases/armor_trims.json"),
         g("entities", "Entity textures", "assets/minecraft/textures/entity/"),
         g("effects", "Potion effect icons", "assets/minecraft/textures/mob_effect/"),
         g("particles", "Particles", "assets/minecraft/textures/particle/"),
