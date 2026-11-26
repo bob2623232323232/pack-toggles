@@ -56,8 +56,8 @@ import java.util.stream.Stream;
  */
 public class ToggleScreen extends Screen {
     private static final int TEXT = 0xFFF5E8DD, GREEN = 0xFF58D26F, RED = 0xFFE0564F, AMBER = 0xFFF0B429;
-    private static final String[] TABS = {"Trims", "Wardrobe", "Skin", "Discord", "Settings"};
-    private static final int T_TRIMS = 0, T_WARDROBE = 1, T_SKIN = 2, T_DISCORD = 3, T_SETTINGS = 4;
+    private static final String[] TABS = {"Trims", "Wardrobe", "Skin", "Discord", "Chat", "Settings"};
+    private static final int T_TRIMS = 0, T_WARDROBE = 1, T_SKIN = 2, T_DISCORD = 3, T_CHAT = 4, T_SETTINGS = 5;
     private static final String[] INTENSITY = {"Low", "Medium", "High"};
     private static final String[] SET_CHIPS = {"Layout", "Theme", "Display", "Colors"};
     private static final String[] SPEED = {"Slow", "Normal", "Fast"};
@@ -146,7 +146,7 @@ public class ToggleScreen extends Screen {
     private boolean colorsInit = false;
 
     // text fields
-    private EditBox search, tokenBox, chanBox, userBox, chatBox, hexBox;
+    private EditBox search, tokenBox, chanBox, userBox, chatBox, hexBox, chatChanBox;
     private String chatText = "";
     private int lastCx = -1, lastCy = -1;
     private final List<EditBox> fields = new ArrayList<>();
@@ -233,6 +233,10 @@ public class ToggleScreen extends Screen {
         DiscordBot.listen = getb(p, "dc.listen", true);
         DiscordBot.autoPost = getb(p, "dc.autopost", false);
         DiscordBot.relay = getb(p, "dc.relay", false);
+        DiscordBot.chatChannelId = p.getProperty("dc.chatchannel", "");
+        DiscordBot.logChat = getb(p, "dc.logchat", false);
+        DiscordBot.hourly = getb(p, "dc.hourly", false);
+        DiscordBot.sayOn = getb(p, "dc.say", true);
         wardrobe.clear();
         for (String s : p.getProperty("wardrobe", "").split(";")) if (!s.isBlank() && entry(s) != null) wardrobe.add(s);
     }
@@ -261,6 +265,10 @@ public class ToggleScreen extends Screen {
         p.setProperty("dc.listen", "" + DiscordBot.listen);
         p.setProperty("dc.autopost", "" + DiscordBot.autoPost);
         p.setProperty("dc.relay", "" + DiscordBot.relay);
+        p.setProperty("dc.chatchannel", DiscordBot.chatChannelId);
+        p.setProperty("dc.logchat", "" + DiscordBot.logChat);
+        p.setProperty("dc.hourly", "" + DiscordBot.hourly);
+        p.setProperty("dc.say", "" + DiscordBot.sayOn);
         p.setProperty("wardrobe", String.join(";", wardrobe));
         try (OutputStream out = Files.newOutputStream(prefsPath())) { p.store(out, "Trim Studio settings (contains your Discord bot token, keep private)"); }
         catch (Exception e) { PackTogglesClient.LOG.warn("Could not save Trim Studio settings", e); }
@@ -480,7 +488,7 @@ public class ToggleScreen extends Screen {
         hits.clear();
         fields.clear();
         search = null;
-        tokenBox = chanBox = userBox = chatBox = hexBox = null;
+        tokenBox = chanBox = userBox = chatBox = hexBox = chatChanBox = null;
         searchActive = false;
         pw = Math.min(width - 24, 560);
         ph = Math.min(height - 16, 340);
@@ -558,6 +566,7 @@ public class ToggleScreen extends Screen {
             case T_WARDROBE -> initWardrobe();
             case T_SKIN -> initSkin();
             case T_DISCORD -> initDiscord();
+            case T_CHAT -> initChat();
             case T_SETTINGS -> initSettings();
             default -> { }
         }
@@ -763,6 +772,18 @@ public class ToggleScreen extends Screen {
         status = Component.literal("Sending skin to Discord...");
     }
 
+    // ---- chat tab layout ----
+    private void initChat() {
+        int lw = discLeftW(), fx0 = cx + 12, fw = lw - 24;
+        chatChanBox = makeBox(fx0, top + 34, fw, DiscordBot.chatChannelId, s -> DiscordBot.chatChannelId = s.trim(), false);
+        hit("opt12", cx + 6, top + 60, lw - 12, 16, () -> DiscordBot.logChat = !DiscordBot.logChat);
+        hit("opt13", cx + 6, top + 78, lw - 12, 16, () -> DiscordBot.sayOn = !DiscordBot.sayOn);
+        hit("opt14", cx + 6, top + 96, lw - 12, 16, () -> DiscordBot.hourly = !DiscordBot.hourly);
+        int bw = (fw - 4) / 2;
+        hit("clog", fx0, top + 124, bw, 18, () -> { ChatBridge.sendLogNow(); status = Component.literal("Sending the chat log..."); });
+        hit("ctest", fx0 + bw + 4, top + 124, bw, 18, () -> DiscordBot.sendChatText("Test message from Trim Studio"));
+    }
+
     private void sendChat() {
         String t = chatText.trim();
         if (t.isEmpty()) return;
@@ -837,6 +858,7 @@ public class ToggleScreen extends Screen {
             case T_WARDROBE -> "Save current set";
             case T_SKIN -> "Save skin PNG";
             case T_DISCORD -> DiscordBot.isRunning() ? "Disconnect bot" : "Connect bot";
+            case T_CHAT -> "Send chat log now";
             default -> "Reset preview";
         };
     }
@@ -847,6 +869,7 @@ public class ToggleScreen extends Screen {
             case T_WARDROBE -> saveLoadout();
             case T_SKIN -> saveSkin();
             case T_DISCORD -> { if (DiscordBot.isRunning()) DiscordBot.stop(); else { savePrefs(); DiscordBot.start(); } }
+            case T_CHAT -> { ChatBridge.sendLogNow(); status = Component.literal("Sending the chat log..."); }
             default -> { viewYaw = 0.35f; status = Component.literal("Preview reset"); }
         }
     }
@@ -1243,6 +1266,10 @@ public class ToggleScreen extends Screen {
                 g.fill(x + 1, y + 2, x + 13, y + 12, c); g.fill(x + 3, y + 12, x + 6, y + 14, c); g.fill(x + 8, y + 12, x + 11, y + 14, c);
                 g.fill(x + 3, y + 5, x + 5, y + 8, bgc); g.fill(x + 9, y + 5, x + 11, y + 8, bgc);
             }
+            case T_CHAT -> { // speech bubble
+                g.fill(x, y + 1, x + 14, y + 10, c); g.fill(x + 2, y + 10, x + 6, y + 13, c);
+                g.fill(x + 3, y + 4, x + 11, y + 5, bgc); g.fill(x + 3, y + 6, x + 9, y + 7, bgc);
+            }
             default -> { g.fill(x + 6, y, x + 8, y + 14, c); g.fill(x, y + 6, x + 14, y + 8, c); disc(g, x + 7, y + 7, 5, c); disc(g, x + 7, y + 7, 2, bgc); }
         }
     }
@@ -1314,6 +1341,7 @@ public class ToggleScreen extends Screen {
                 case T_WARDROBE -> drawWardrobe(g);
                 case T_SKIN -> drawSkin(g, mx, my);
                 case T_DISCORD -> drawDiscord(g, mx, my);
+                case T_CHAT -> drawChat(g, mx, my);
                 case T_SETTINGS -> drawSettings(g);
                 default -> drawTrims(g, mx, my);
             }
@@ -1691,6 +1719,35 @@ public class ToggleScreen extends Screen {
         text(g, fit("!trim  !skin  !random  !help", rw - 20), rx + 10, hy + 11, TEXT);
         text(g, fit("!set <armor> <pattern> <material>", rw - 20), rx + 10, hy + 22, TEXT);
         text(g, fit("Enable Message Content Intent on the bot", rw - 20), rx + 10, hy + 33, muted());
+    }
+
+    // ---- chat tab ----
+    private void drawChat(GuiGraphics g, int mx, int my) {
+        int lw = discLeftW(), fx0 = cx + 12, fw = lw - 24;
+        card(g, cx, top, lw, bottom - top);
+        bold(g, "Minecraft chat bridge", cx + 10, top + 7, TEXT);
+        if (chatChanBox != null) field(g, chatChanBox, fx0, top + 34, fw, "Chat channel ID", mx, my);
+        optionRow(g, 12, cx + 6, top + 60, lw - 12, "Log all chat to Discord", null, DiscordBot.logChat);
+        optionRow(g, 13, cx + 6, top + 78, lw - 12, "Allow !say from Discord", null, DiscordBot.sayOn);
+        optionRow(g, 14, cx + 6, top + 96, lw - 12, "Hourly chat file (in game only)", null, DiscordBot.hourly);
+        int bw = (fw - 4) / 2;
+        chip(g, "clog", new int[]{fx0, top + 124, bw, 18}, "Send log now", 0, cAccent);
+        chip(g, "ctest", new int[]{fx0 + bw + 4, top + 124, bw, 18}, "Test message", 0, cAccent);
+        boolean on = DiscordBot.isRunning();
+        text(g, fit(on ? "Bot is online" : "Connect the bot on the Discord tab first", lw - 20), cx + 10, top + 150, on ? GREEN : muted());
+
+        int rx = cx + lw + 8, rw = cw - lw - 8, rh = bottom - top;
+        card(g, rx, top, rw, rh);
+        bold(g, "Recent chat", rx + 10, top + 7, TEXT);
+        List<String> lines = ChatBridge.recent();
+        int n = Math.max(1, (rh - 64) / 10);
+        int start = Math.max(0, lines.size() - n);
+        if (lines.isEmpty()) text(g, "Nothing yet", rx + 10, top + 22, muted());
+        for (int i = start; i < lines.size(); i++) text(g, fit(lines.get(i), rw - 20), rx + 10, top + 22 + (i - start) * 10, TEXT);
+        int hy = top + rh - 34;
+        text(g, fit("In the chat channel: !say <message>", rw - 20), rx + 10, hy, muted());
+        text(g, fit("says it in game as you (no / commands).", rw - 20), rx + 10, hy + 11, muted());
+        text(g, fit("Set a user ID on the Discord tab for safety.", rw - 20), rx + 10, hy + 22, muted());
     }
 
     // ---- settings ----
