@@ -76,6 +76,7 @@ public class ToggleScreen extends Screen {
     public ToggleScreen(Screen parent) {
         super(Component.translatable("screen.packtoggles.title"));
         this.parent = parent;
+        PackTogglesClient.LOG.info("[Pack Toggles] screen opened: build 1.0.1, {} tabs, anim={}, glow={}", TABS.length, Config.anim, Config.glow);
         if (Config.sources.isEmpty()) {
             try { Config.sources.addAll(PackBuilder.enabledInGame()); } catch (Exception ignored) { }
             if (Config.sources.isEmpty()) {
@@ -162,6 +163,7 @@ public class ToggleScreen extends Screen {
     private void setTab(int t) {
         if (t == tab) return;
         restartEntrance(t > tab ? 1 : -1);
+        PackTogglesClient.LOG.info("[Pack Toggles] tab -> {}", TABS[t]);
         tab = t;
         page = 0;
         init();
