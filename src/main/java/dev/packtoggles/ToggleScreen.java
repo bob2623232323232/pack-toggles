@@ -72,7 +72,7 @@ public class ToggleScreen extends Screen {
             boolean now = PackBuilder.build();
             if (now) {
                 status = Component.literal("§aBuilt " + PackBuilder.outputName() + " – select it once in Resource Packs");
-                Minecraft.getInstance().reloadResources();
+                Minecraft.getInstance().reloadResourcePacks();
             } else {
                 status = Component.literal("§eThe pack is in use. Restart the game to apply.");
             }
