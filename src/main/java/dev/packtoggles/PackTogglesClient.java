@@ -10,6 +10,7 @@ import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/** Trim Studio entry point: press J to open the armor-trim preview and skin editor. */
 public class PackTogglesClient implements ClientModInitializer {
     public static final Logger LOG = LoggerFactory.getLogger("packtoggles");
     private static final KeyMapping.Category CATEGORY =
@@ -18,7 +19,6 @@ public class PackTogglesClient implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
-        PackBuilder.finishPendingSwap();
         Config.load();
         openKey = KeyBindingHelper.registerKeyBinding(new KeyMapping(
                 "key.packtoggles.open", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_J, CATEGORY));
