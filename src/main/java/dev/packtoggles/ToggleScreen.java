@@ -146,7 +146,9 @@ public class ToggleScreen extends Screen {
     private boolean colorsInit = false;
 
     // text fields
-    private EditBox search, tokenBox, chanBox, userBox;
+    private EditBox search, tokenBox, chanBox, userBox, chatBox, hexBox;
+    private String chatText = "";
+    private int lastCx = -1, lastCy = -1;
     private final List<EditBox> fields = new ArrayList<>();
     private String searchText = "";
     private boolean searchActive = false, building = false, dirty = false, refocus = false;
@@ -230,6 +232,7 @@ public class ToggleScreen extends Screen {
         DiscordBot.userId = p.getProperty("dc.user", "");
         DiscordBot.listen = getb(p, "dc.listen", true);
         DiscordBot.autoPost = getb(p, "dc.autopost", false);
+        DiscordBot.relay = getb(p, "dc.relay", false);
         wardrobe.clear();
         for (String s : p.getProperty("wardrobe", "").split(";")) if (!s.isBlank() && entry(s) != null) wardrobe.add(s);
     }
@@ -257,6 +260,7 @@ public class ToggleScreen extends Screen {
         p.setProperty("dc.user", DiscordBot.userId);
         p.setProperty("dc.listen", "" + DiscordBot.listen);
         p.setProperty("dc.autopost", "" + DiscordBot.autoPost);
+        p.setProperty("dc.relay", "" + DiscordBot.relay);
         p.setProperty("wardrobe", String.join(";", wardrobe));
         try (OutputStream out = Files.newOutputStream(prefsPath())) { p.store(out, "Trim Studio settings (contains your Discord bot token, keep private)"); }
         catch (Exception e) { PackTogglesClient.LOG.warn("Could not save Trim Studio settings", e); }
@@ -476,7 +480,7 @@ public class ToggleScreen extends Screen {
         hits.clear();
         fields.clear();
         search = null;
-        tokenBox = chanBox = userBox = null;
+        tokenBox = chanBox = userBox = chatBox = hexBox = null;
         searchActive = false;
         pw = Math.min(width - 24, 560);
         ph = Math.min(height - 16, 340);
@@ -708,6 +712,13 @@ public class ToggleScreen extends Screen {
         hit("clear", rX + bw + 4, by + 22, bw, 18, () -> { pushUndo(); Arrays.fill(canvas, 0); skinDirty = true; skinChanged = true; status = Component.literal("Canvas cleared"); });
         hit("folder", rX, by + 44, bw, 18, this::openFolder);
         hit("sdisc", rX + bw + 4, by + 44, bw, 18, this::sendSkinToDiscord);
+        hit("dark", rX, by + 66, bw, 18, () -> shade(-24));
+        hit("light", rX + bw + 4, by + 66, bw, 18, () -> shade(24));
+        hexBox = makeBox(rX + 23, yHex(), 62, String.format("#%06X", curColor & 0xFFFFFF), s -> {
+            String h = s.trim().replace("#", "");
+            if (h.length() == 6) try { curColor = 0xFF000000 | Integer.parseInt(h, 16); } catch (Exception ignored) { }
+        }, false);
+        hexBox.setMaxLength(7);
     }
 
     // ---- discord tab layout ----
@@ -740,6 +751,9 @@ public class ToggleScreen extends Screen {
         });
         hit("dtrim", fx0 + bw + 4, by, bw, 18, () -> DiscordBot.sendText(loadoutText()));
         hit("dskin", fx0 + 2 * (bw + 4), by, bw, 18, this::sendSkinToDiscord);
+        hit("opt11", cx + 6, top + 185, lw - 12, 16, () -> DiscordBot.relay = !DiscordBot.relay);
+        chatBox = makeBox(fx0, top + 221, fw - 52, chatText, s -> chatText = s, false);
+        hit("dchat", fx0 + fw - 48, top + 221, 48, 18, this::sendChat);
     }
 
     private void sendSkinToDiscord() {
@@ -747,6 +761,15 @@ public class ToggleScreen extends Screen {
         if (png.length == 0) { status = Component.literal("Could not build the skin PNG"); return; }
         DiscordBot.sendFile("Skin from Trim Studio", "skin.png", png);
         status = Component.literal("Sending skin to Discord...");
+    }
+
+    private void sendChat() {
+        String t = chatText.trim();
+        if (t.isEmpty()) return;
+        DiscordBot.sendText(t);
+        status = Component.literal("Sending to Discord...");
+        chatText = "";
+        if (chatBox != null) { building = true; chatBox.setValue(""); building = false; }
     }
 
     // ---- settings pages ----
@@ -883,9 +906,10 @@ public class ToggleScreen extends Screen {
             pushUndo();
             Arrays.fill(canvas, 0);
             for (int y = 0; y < img.getHeight(); y++) for (int x = 0; x < 64; x++) canvas[y * 64 + x] = img.getRGB(x, y);
+            if (img.getHeight() == 32) { copyLimb(canvas, 0, 16, 16, 48); copyLimb(canvas, 40, 16, 32, 48); }
             skinDirty = false;
             skinChanged = true;
-            status = Component.literal("Loaded " + f.getFileName() + (img.getHeight() == 32 ? " (old 64x32 format, left limbs are empty)" : ""));
+            status = Component.literal("Loaded " + f.getFileName() + (img.getHeight() == 32 ? " (old 64x32 format, left limbs mirrored from the right)" : ""));
         } catch (Exception e) {
             PackTogglesClient.LOG.warn("Load skin failed", e);
             status = Component.literal("Load failed: " + e.getMessage());
@@ -943,6 +967,7 @@ public class ToggleScreen extends Screen {
             search.setFocused(true);
             return true;
         }
+        if (chatBox != null && chatBox.isFocused() && (k == GLFW.GLFW_KEY_ENTER || k == GLFW.GLFW_KEY_KP_ENTER)) { sendChat(); return true; }
         if (anyTyping()) {
             if (k == GLFW.GLFW_KEY_ESCAPE) {
                 if (search != null) search.setFocused(false);
@@ -967,7 +992,7 @@ public class ToggleScreen extends Screen {
         boolean left = mc.mouseHandler.isLeftPressed(), right = mc.mouseHandler.isRightPressed();
         boolean pressed = left || right, edge = pressed && !wasPressed;
         wasPressed = pressed;
-        if (!pressed) { canvasDrag = false; sliderDrag = -1; prevDrag = false; return; }
+        if (!pressed) { canvasDrag = false; sliderDrag = -1; prevDrag = false; lastCx = -1; return; }
         if (radialOpen || tabT < 0.5f) return;
 
         if (tab == T_TRIMS) {
@@ -979,7 +1004,8 @@ public class ToggleScreen extends Screen {
             if (edge) {
                 if (inside) {
                     canvasDrag = true;
-                    if (tool != 3) pushUndo();
+                    lastCx = -1;
+                    if (tool == 0 || tool == 1) pushUndo();
                 }
                 for (int i = 0; i < 3; i++) {
                     int sy = yBars() + i * 14;
@@ -991,22 +1017,17 @@ public class ToggleScreen extends Screen {
                 int shift = 16 - 8 * sliderDrag;
                 curColor = 0xFF000000 | (curColor & ~(255 << shift) & 0xFFFFFF) | (v << shift);
             }
+            if (canvasDrag && !inside) lastCx = -1;
             if (canvasDrag && inside) {
                 int x = (mx - cvX) / cs, y = (my - cvY) / cs, idx = y * 64 + x;
                 if (tool == 3) {
                     if (edge && (canvas[idx] >>> 24) != 0) curColor = canvas[idx] | 0xFF000000;
                 } else if (tool == 2) {
-                    if (edge && !right && USED[idx]) { flood(x, y, curColor); skinDirty = true; skinChanged = true; }
+                    if (edge && !right && USED[idx] && canvas[idx] != curColor) { pushUndo(); flood(x, y, curColor); skinDirty = true; skinChanged = true; }
                 } else {
                     int nc = (right || tool == 1) ? 0 : curColor;
-                    for (int by = 0; by < brush; by++) {
-                        for (int bx = 0; bx < brush; bx++) {
-                            int xx = x - brush / 2 + bx, yy = y - brush / 2 + by;
-                            if (xx < 0 || yy < 0 || xx > 63 || yy > 63) continue;
-                            int ii = yy * 64 + xx;
-                            if (USED[ii] && canvas[ii] != nc) { canvas[ii] = nc; skinDirty = true; skinChanged = true; }
-                        }
-                    }
+                    if (lastCx < 0) stamp(x, y, nc); else line(lastCx, lastCy, x, y, nc);
+                    lastCx = x; lastCy = y;
                 }
             }
         } else if (tab == T_SETTINGS && setChip == 3) {
@@ -1028,6 +1049,40 @@ public class ToggleScreen extends Screen {
                 if (col == 0) customAccent = cur; else customAccent2 = cur;
             }
         }
+    }
+
+    private void stamp(int x, int y, int nc) {
+        for (int by = 0; by < brush; by++) {
+            for (int bx = 0; bx < brush; bx++) {
+                int xx = x - brush / 2 + bx, yy = y - brush / 2 + by;
+                if (xx < 0 || yy < 0 || xx > 63 || yy > 63) continue;
+                int ii = yy * 64 + xx;
+                if (USED[ii] && canvas[ii] != nc) { canvas[ii] = nc; skinDirty = true; skinChanged = true; }
+            }
+        }
+    }
+
+    private void line(int x0, int y0, int x1, int y1, int nc) {
+        int dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, err = dx + dy;
+        while (true) {
+            stamp(x0, y0, nc);
+            if (x0 == x1 && y0 == y1) break;
+            int e2 = 2 * err;
+            if (e2 >= dy) { err += dy; x0 += sx; }
+            if (e2 <= dx) { err += dx; y0 += sy; }
+        }
+    }
+
+    /** Mirrors a 16x16 limb layout (used to rebuild the left arm/leg of old 64x32 skins). */
+    private static void copyLimb(int[] c, int su, int sv, int du, int dv) {
+        int[][] r = {{4, 0, 4, 4, 4, 0}, {8, 0, 4, 4, 8, 0}, {0, 4, 4, 12, 8, 4}, {4, 4, 4, 12, 4, 4}, {8, 4, 4, 12, 0, 4}, {12, 4, 4, 12, 12, 4}};
+        for (int[] q : r) for (int j = 0; j < q[3]; j++) for (int i = 0; i < q[2]; i++)
+            c[(dv + q[5] + j) * 64 + du + q[4] + i] = c[(sv + q[1] + j) * 64 + su + q[0] + (q[2] - 1 - i)];
+    }
+
+    private void shade(int d) {
+        int r = clampi((curColor >> 16 & 255) + d, 0, 255), gr = clampi((curColor >> 8 & 255) + d, 0, 255), b = clampi((curColor & 255) + d, 0, 255);
+        curColor = 0xFF000000 | (r << 16) | (gr << 8) | b;
     }
 
     private void flood(int sx, int sy, int col) {
@@ -1568,7 +1623,11 @@ public class ToggleScreen extends Screen {
             g.fill(kx, sy, kx + 3, sy + 10, 0xFFFFFFFF);
         }
         round(g, rx, yHex(), 22, 16, curColor);
-        text(g, String.format("#%06X", curColor & 0xFFFFFF), rx + 28, yHex() + 4, TEXT);
+        String hexStr = String.format("#%06X", curColor & 0xFFFFFF);
+        if (hexBox != null) {
+            if (!hexBox.isFocused() && !hexBox.getValue().equalsIgnoreCase(hexStr)) { building = true; hexBox.setValue(hexStr); building = false; }
+            field(g, hexBox, rx + 23, yHex(), 62, "", mx, my);
+        }
 
         for (int i = 0; i < 16; i++) {
             int sx = rx + (i % 8) * (palSw + 3), sy = yPal() + (i / 8) * (palSw + 3);
@@ -1577,9 +1636,9 @@ public class ToggleScreen extends Screen {
             g.fill(sx, sy, sx + palSw, sy + palSw, PALETTE[i]);
         }
         int by = yPal() + 2 * (palSw + 3) + 6, bw = (ctlW - 4) / 2;
-        String[] bl = {"Undo", "Template", "Load next", "Clear", "Open folder", "To Discord"};
-        String[] bk = {"undo", "tmpl", "load", "clear", "folder", "sdisc"};
-        for (int i = 0; i < 6; i++) chip(g, bk[i], new int[]{rx + (i % 2) * (bw + 4), by + (i / 2) * 22, bw, 18}, bl[i], 0, cAccent);
+        String[] bl = {"Undo", "Template", "Load next", "Clear", "Open folder", "To Discord", "Darker", "Lighter"};
+        String[] bk = {"undo", "tmpl", "load", "clear", "folder", "sdisc", "dark", "light"};
+        for (int i = 0; i < 8; i++) chip(g, bk[i], new int[]{rx + (i % 2) * (bw + 4), by + (i / 2) * 22, bw, 18}, bl[i], 0, cAccent);
 
         int pvx = rx + ctlW + 8, pvW = 16 * pvScale, pvH = 32 * pvScale;
         card(g, pvx - 3, top - 3, 2 * pvW + 8 + 6, pvH + 22);
@@ -1615,6 +1674,9 @@ public class ToggleScreen extends Screen {
         chip(g, "dcon", new int[]{fx0, by, bw, 18}, on ? "Disconnect" : "Connect", on ? 1 : 0, RED);
         chip(g, "dtrim", new int[]{fx0 + bw + 4, by, bw, 18}, "Send trim", 0, cAccent);
         chip(g, "dskin", new int[]{fx0 + 2 * (bw + 4), by, bw, 18}, "Send skin", 0, cAccent);
+        optionRow(g, 11, cx + 6, top + 185, lw - 12, "Show Discord chat in game", null, DiscordBot.relay);
+        if (chatBox != null) field(g, chatBox, fx0, top + 221, fw - 52, "Message to Discord (Enter sends)", mx, my);
+        chip(g, "dchat", new int[]{fx0 + fw - 48, top + 221, 48, 18}, "Send", 0, cAccent);
 
         int rx = cx + lw + 8, rw = cw - lw - 8, rh = bottom - top;
         card(g, rx, top, rw, rh);
