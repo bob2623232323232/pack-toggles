@@ -3,6 +3,8 @@ package dev.packtoggles;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import net.minecraft.client.Minecraft;
+import net.minecraft.network.chat.Component;
 
 import java.io.ByteArrayOutputStream;
 import java.net.URI;
@@ -21,20 +23,22 @@ import java.util.Locale;
 
 /**
  * Tiny Discord bot over the REST API (no extra libraries): posts trims and skins to a channel and
- * answers !commands by polling that channel every few seconds.
+ * answers !commands by polling that channel every few seconds. A second "chat channel" carries the
+ * Minecraft chat log and the !say command (see ChatBridge).
  * The bot needs "Message Content Intent" enabled in the Discord developer portal to read commands.
  * The token is never logged.
  */
 public final class DiscordBot {
-    static volatile String token = "", channelId = "", userId = "";
-    static volatile boolean listen = true, autoPost = false;
+    static volatile String token = "", channelId = "", userId = "", chatChannelId = "";
+    static volatile boolean listen = true, autoPost = false, relay = false;
+    static volatile boolean logChat = false, hourly = false, sayOn = true;
 
     private static volatile boolean running = false;
     private static volatile String status = "Offline";
     private static final Deque<String> LOG = new ArrayDeque<>();
     private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
     private static Thread thread;
-    private static String lastId = null;
+    private static String lastId = null, lastChatId = null;
     private static boolean warnedIntent = false;
 
     private DiscordBot() { }
@@ -55,7 +59,9 @@ public final class DiscordBot {
         if (token.isBlank() || channelId.isBlank()) { log("Enter a bot token and channel ID first"); return; }
         running = true;
         lastId = null;
+        lastChatId = null;
         status = "Connecting...";
+        ChatBridge.ensureStarted();
         thread = new Thread(DiscordBot::loop, "trimstudio-discord");
         thread.setDaemon(true);
         thread.start();
@@ -82,37 +88,67 @@ public final class DiscordBot {
         return JsonParser.parseString(r.body()).getAsJsonObject().get("username").getAsString();
     }
 
-    private static void post(String content) throws Exception {
+    /** Message payload that never pings anyone (@everyone, roles, users). */
+    private static JsonObject payload(String content) {
         JsonObject o = new JsonObject();
         o.addProperty("content", content.length() > 1900 ? content.substring(0, 1900) : content);
-        HttpResponse<String> r = HTTP.send(req("/channels/" + channelId.trim() + "/messages")
+        JsonObject am = new JsonObject();
+        am.add("parse", new JsonArray());
+        o.add("allowed_mentions", am);
+        return o;
+    }
+
+    private static void postTo(String channel, String content) throws Exception {
+        HttpResponse<String> r = HTTP.send(req("/channels/" + channel.trim() + "/messages")
                 .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(o.toString())).build(), HttpResponse.BodyHandlers.ofString());
+                .POST(HttpRequest.BodyPublishers.ofString(payload(content).toString())).build(), HttpResponse.BodyHandlers.ofString());
         if (r.statusCode() / 100 != 2) throw new Exception("HTTP " + r.statusCode() + " while sending");
     }
 
-    private static void postFile(String content, String name, byte[] data) throws Exception {
+    private static void post(String content) throws Exception { postTo(channelId, content); }
+
+    private static void postFileTo(String channel, String content, String name, byte[] data, String mime) throws Exception {
         String b = "----trimstudio" + System.nanoTime();
-        JsonObject o = new JsonObject();
-        o.addProperty("content", content);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        out.write(("--" + b + "\r\nContent-Disposition: form-data; name=\"payload_json\"\r\nContent-Type: application/json\r\n\r\n" + o + "\r\n").getBytes(StandardCharsets.UTF_8));
-        out.write(("--" + b + "\r\nContent-Disposition: form-data; name=\"files[0]\"; filename=\"" + name + "\"\r\nContent-Type: image/png\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+        out.write(("--" + b + "\r\nContent-Disposition: form-data; name=\"payload_json\"\r\nContent-Type: application/json\r\n\r\n" + payload(content) + "\r\n").getBytes(StandardCharsets.UTF_8));
+        out.write(("--" + b + "\r\nContent-Disposition: form-data; name=\"files[0]\"; filename=\"" + name + "\"\r\nContent-Type: " + mime + "\r\n\r\n").getBytes(StandardCharsets.UTF_8));
         out.write(data);
         out.write(("\r\n--" + b + "--\r\n").getBytes(StandardCharsets.UTF_8));
-        HttpResponse<String> r = HTTP.send(req("/channels/" + channelId.trim() + "/messages")
+        HttpResponse<String> r = HTTP.send(req("/channels/" + channel.trim() + "/messages")
                 .header("Content-Type", "multipart/form-data; boundary=" + b)
                 .POST(HttpRequest.BodyPublishers.ofByteArray(out.toByteArray())).build(), HttpResponse.BodyHandlers.ofString());
         if (r.statusCode() / 100 != 2) throw new Exception("HTTP " + r.statusCode() + " while uploading");
     }
 
+    private static void postFile(String content, String name, byte[] data) throws Exception {
+        postFileTo(channelId, content, name, data, "image/png");
+    }
+
+    /** Used by ChatBridge (runs on its own thread). Needs the bot token and a chat channel. */
+    static boolean chatReady() { return !token.isBlank() && !chatChannelId.isBlank(); }
+
+    static void postChat(String content) throws Exception { postTo(chatChannelId, content); }
+
+    static void postChatFile(String content, String name, byte[] data) throws Exception {
+        postFileTo(chatChannelId, content, name, data, "text/plain");
+    }
+
     /** Fire-and-forget helpers used by the UI. */
     static void sendText(String text) {
-        async(() -> { post(text); log("Sent trim to Discord"); });
+        async(() -> { post(text); log("Sent message to Discord"); });
     }
 
     static void sendFile(String text, String name, byte[] data) {
         async(() -> { postFile(text, name, data); log("Sent " + name + " to Discord"); });
+    }
+
+    static void sendChatText(String text) {
+        if (!chatReady()) { log("Enter a bot token and a chat channel ID first"); return; }
+        Thread t = new Thread(() -> {
+            try { postChat(text); log("Sent to the chat channel"); } catch (Exception e) { log("Failed: " + e.getMessage()); }
+        }, "trimstudio-discord-chat");
+        t.setDaemon(true);
+        t.start();
     }
 
     private interface Job { void run() throws Exception; }
@@ -141,6 +177,7 @@ public final class DiscordBot {
         while (running) {
             try {
                 if (listen) poll();
+                if (!chatChannelId.isBlank()) pollChat();
                 Thread.sleep(4000);
             } catch (InterruptedException ie) {
                 break;
@@ -175,7 +212,62 @@ public final class DiscordBot {
                 continue;
             }
             if (content.startsWith("!")) handle(content);
+            else if (relay) showInGame(author, content);
         }
+    }
+
+    /** Reads the Minecraft chat channel: only "!say <text>" is acted on. */
+    private static void pollChat() throws Exception {
+        String ch = chatChannelId.trim();
+        String path = "/channels/" + ch + "/messages?limit=" + (lastChatId == null ? 1 : 20) + (lastChatId == null ? "" : "&after=" + lastChatId);
+        HttpResponse<String> r = HTTP.send(req(path).GET().build(), HttpResponse.BodyHandlers.ofString());
+        if (r.statusCode() == 429) { Thread.sleep(3000); return; }
+        if (r.statusCode() != 200) { log("Could not read the chat channel: HTTP " + r.statusCode()); Thread.sleep(6000); return; }
+        JsonArray arr = JsonParser.parseString(r.body()).getAsJsonArray();
+        if (lastChatId == null) {
+            lastChatId = arr.size() > 0 ? arr.get(0).getAsJsonObject().get("id").getAsString() : "0";
+            return;
+        }
+        if (arr.size() == 0) return;
+        lastChatId = arr.get(0).getAsJsonObject().get("id").getAsString();
+        for (int i = arr.size() - 1; i >= 0; i--) {
+            JsonObject m = arr.get(i).getAsJsonObject();
+            JsonObject author = m.getAsJsonObject("author");
+            if (author.has("bot") && author.get("bot").getAsBoolean()) continue;
+            if (!userId.isBlank() && !author.get("id").getAsString().equals(userId.trim())) continue;
+            String content = m.get("content").getAsString().trim();
+            if (content.isEmpty()) {
+                if (!warnedIntent) { warnedIntent = true; log("Messages look empty: enable Message Content Intent for the bot"); }
+                continue;
+            }
+            String lower = content.toLowerCase(Locale.ROOT);
+            if (lower.equals("!say") || lower.startsWith("!say ")) say(content.length() > 4 ? content.substring(4).trim() : "");
+        }
+    }
+
+    /** Sends a real chat message as the player. Slash commands are refused on purpose. */
+    private static void say(String text) {
+        if (!sayOn) { log("!say ignored (turned off on the Chat tab)"); return; }
+        String t = text.replace('\n', ' ').replace('\r', ' ').trim();
+        if (t.isEmpty()) return;
+        if (t.startsWith("/")) { log("!say refused: messages starting with / are not allowed"); return; }
+        if (t.length() > 256) t = t.substring(0, 256);
+        final String msg = t;
+        Minecraft mc = Minecraft.getInstance();
+        mc.execute(() -> {
+            if (mc.player != null && mc.getConnection() != null) mc.getConnection().sendChat(msg);
+        });
+        log("Said in game: " + (msg.length() > 40 ? msg.substring(0, 40) + ".." : msg));
+    }
+
+    /** Shows a normal Discord message in the Minecraft chat (only while "Show Discord chat in game" is on). */
+    private static void showInGame(JsonObject author, String content) {
+        String who = author.has("global_name") && !author.get("global_name").isJsonNull()
+                ? author.get("global_name").getAsString() : author.get("username").getAsString();
+        Minecraft mc = Minecraft.getInstance();
+        mc.execute(() -> {
+            if (mc.player != null) mc.player.displayClientMessage(Component.literal("[Discord] " + who + ": " + content), false);
+        });
     }
 
     private static void handle(String content) throws Exception {
