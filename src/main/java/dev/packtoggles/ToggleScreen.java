@@ -4,11 +4,14 @@ import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.PlayerFaceRenderer;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.resources.DefaultPlayerSkin;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.player.PlayerSkin;
+import org.lwjgl.glfw.GLFW;
 
 import java.util.*;
 
@@ -16,21 +19,31 @@ import java.util.*;
  * Themed dashboard. Everything is drawn by hand in render(); the vanilla Buttons are fully
  * transparent and only provide the click areas (and hover state).
  *
- * Animation overview (all time-based, see render()):
- *  - sidebar: a spring-driven highlight glides (and slightly overshoots) between tabs
- *  - tab / page / chip change: content slides in from the side, fades in, and list rows cascade in
- *  - header title slides in on every tab change
- *  - Trims tab: shimmering armor-trim preview, material colour cycle, pattern chip wave
+ * New in 1.1.0 (Pyra Insights style):
+ *  - five navigation layouts: Classic, Rail, Tabs, Dock, Radial (press L anywhere to cycle)
+ *  - search box in the header (Ctrl+K), filters the Packs tab
+ *  - number keys 1-5 switch tabs, hover tooltips on icon-only navigation
+ *  - status pill (Up to date / Changes pending / Restart to apply)
+ *  - Settings split into Layout / Theme / Display pages with card sections
  */
 public class ToggleScreen extends Screen {
-    private static final int TEXT = 0xFFF5E8DD, GREEN = 0xFF58D26F, RED = 0xFFE0564F;
+    private static final int TEXT = 0xFFF5E8DD, GREEN = 0xFF58D26F, RED = 0xFFE0564F, AMBER = 0xFFF0B429;
     private static final String[] TABS = {"Overview", "Packs", "Trims", "Sources", "Settings"};
     private static final int T_OVERVIEW = 0, T_PACKS = 1, T_TRIMS = 2, T_SOURCES = 3, T_SETTINGS = 4;
     private static final String[] CHIPS = {"All", "Minecraft", "Mods", "Misc"};
     private static final String[] INTENSITY = {"Low", "Medium", "High"};
+    private static final String[] SET_CHIPS = {"Layout", "Theme", "Display"};
     private static final Set<String> MC_IDS = Set.of("blocks", "items", "gui", "trims", "entities", "effects", "particles", "ranks", "misc_tex");
     private static final Set<String> MISC_IDS = Set.of("sounds", "shaders", "optifine", "lang", "respackopts",
             "carl", "potions_icons", "visible_cooldown", "entity_features");
+
+    // layouts
+    private static final int L_CLASSIC = 0, L_RAIL = 1, L_TABS = 2, L_DOCK = 3, L_RADIAL = 4;
+    private static final String[] LAYOUTS = {"Classic", "Rail", "Tabs", "Dock", "Radial"};
+    private static final String[] LAYOUT_SUB = {"Sidebar with labels", "Slim icon rail", "Pill tabs across the top",
+            "Magnifying dock at the bottom", "Wheel menu, Tab to open"};
+    private static int layout = L_RAIL;                  // remembered while the game is running
+    private static Set<String> appliedD, appliedS;        // what the last Apply built (for the status pill)
 
     // armor trim showcase data
     private static final String[] PATTERNS = {"Sentry", "Dune", "Coast", "Wild", "Ward", "Eye", "Vex", "Tide", "Snout",
@@ -55,10 +68,10 @@ public class ToggleScreen extends Screen {
     private final FX fx = new FX();
     private final Map<String, Float> eased = new HashMap<>();
     private final Map<String, Button> hits = new HashMap<>();
-    private int tab = 0, chip = 0, page = 0;
+    private int tab = 0, chip = 0, page = 0, setChip = 0;
     private float openT = 0, tabT = 1;
     private int tabDir = 1;                 // +1: content enters from the right, -1: from the left
-    private float selY = Float.NaN, selV = 0; // sidebar highlight spring (position, velocity)
+    private float selX = Float.NaN, selY = 0, selVX = 0, selVY = 0; // navigation highlight spring
     private long lastNanos = System.nanoTime();
     private float dt = 0.016f, time = 0;
     private Component status = Component.empty();
@@ -66,23 +79,34 @@ public class ToggleScreen extends Screen {
     private int cAccent, cAccent2, cBg, cCard, cLine; // eased theme colours
     private boolean colorsInit = false;
 
+    // search
+    private EditBox search;
+    private String searchText = "";
+    private boolean searchActive = false, building = false, dirty = false, refocus = false;
+    private boolean radialOpen = false, restartNeeded = false;
+
     // layout
     private int px, py, pw, ph, cx, cw, top, bottom, rowH = 22, rows;
     private int tabStep = 34, tabH = 28;
     private int applyX, applyY, applyW = 150, applyH = 24;
+    private int closeX, nameX, nameW, stX, stW, searchX, searchW;
     private List<Group> rowGroups = new ArrayList<>();
     private List<String> srcRows = new ArrayList<>();
 
     public ToggleScreen(Screen parent) {
         super(Component.translatable("screen.packtoggles.title"));
         this.parent = parent;
-        PackTogglesClient.LOG.info("[Pack Toggles] screen opened: build 1.0.1, {} tabs, anim={}, glow={}", TABS.length, Config.anim, Config.glow);
+        PackTogglesClient.LOG.info("[Pack Toggles] screen opened: build 1.1.0, {} tabs, layout={}, anim={}, glow={}", TABS.length, LAYOUTS[layout], Config.anim, Config.glow);
         if (Config.sources.isEmpty()) {
             try { Config.sources.addAll(PackBuilder.enabledInGame()); } catch (Exception ignored) { }
             if (Config.sources.isEmpty()) {
                 List<String> c = PackBuilder.candidates();
                 if (!c.isEmpty()) Config.sources.add(c.get(0));
             }
+        }
+        if (appliedD == null) { // first open this session: assume the current config is what is applied
+            appliedD = new HashSet<>(Config.disabled);
+            appliedS = new HashSet<>(Config.sources);
         }
     }
 
@@ -151,6 +175,11 @@ public class ToggleScreen extends Screen {
         round(g, x + 1, y + 1, w - 2, h - 2, cCard);
     }
 
+    private void toggleSwitch(GuiGraphics g, int x, int y, float sw) {
+        round(g, x, y, 26, 12, mix(mix(cCard, TEXT, 0.15f), cAccent, sw));
+        round(g, x + 1 + (int) (14 * sw), y + 1, 10, 10, 0xFFFFFFFF);
+    }
+
     private boolean hov(String key) { Button b = hits.get(key); return b != null && b.isHoveredOrFocused(); }
 
     private void hit(String key, int x, int y, int w, int h, Runnable r) {
@@ -161,7 +190,8 @@ public class ToggleScreen extends Screen {
     }
 
     private void setTab(int t) {
-        if (t == tab) return;
+        radialOpen = false;
+        if (t == tab) { init(); return; }
         restartEntrance(t > tab ? 1 : -1);
         PackTogglesClient.LOG.info("[Pack Toggles] tab -> {}", TABS[t]);
         tab = t;
@@ -169,33 +199,131 @@ public class ToggleScreen extends Screen {
         init();
     }
 
+    private void setLayout(int l) {
+        layout = ((l % LAYOUTS.length) + LAYOUTS.length) % LAYOUTS.length;
+        radialOpen = false;
+        selX = Float.NaN;
+        restartEntrance(1);
+        PackTogglesClient.LOG.info("[Pack Toggles] layout -> {}", LAYOUTS[layout]);
+        init();
+    }
+
+    private boolean pending() {
+        return !new HashSet<>(Config.disabled).equals(appliedD) || !new HashSet<>(Config.sources).equals(appliedS);
+    }
+
+    private String pillLabel() { return restartNeeded ? "Restart to apply" : pending() ? "Changes pending" : "Up to date"; }
+
+    private int pillColor() { return restartNeeded ? RED : pending() ? AMBER : GREEN; }
+
+    // ---------------- navigation geometry ----------------
+    private int[] navRect(int i) {
+        switch (layout) {
+            case L_CLASSIC:
+                return new int[]{px + 8, py + 44 + i * tabStep, 104, tabH};
+            case L_TABS: {
+                int x = px + 10;
+                for (int k = 0; k < i; k++) x += font.width(TABS[k]) + 16 + 4;
+                return new int[]{x, py + 34, font.width(TABS[i]) + 16, 20};
+            }
+            default:
+                return new int[]{px + 8, py + 44 + i * tabStep, 34, tabH};
+        }
+    }
+
+    private int dockX(int i) { return px + (pw - (TABS.length * 38 - 8)) / 2 + i * 38; }
+
+    private int dockY() { return py + ph - 8 - 30; }
+
+    private int[] wheelPos(int i) {
+        int ccx = cx + cw / 2, ccy = top + (bottom - top) / 2;
+        int r = Math.max(30, Math.min(70, (bottom - top) / 2 - 26));
+        double a = -Math.PI / 2 + i * 2 * Math.PI / TABS.length;
+        return new int[]{ccx + (int) Math.round(r * Math.cos(a)), ccy + (int) Math.round(r * Math.sin(a))};
+    }
+
     // ---------------- layout / click areas ----------------
     @Override
     protected void init() {
         clearWidgets();
         hits.clear();
+        search = null;
+        searchActive = false;
         pw = Math.min(width - 24, 560);
         ph = Math.min(height - 16, 340);
         px = (width - pw) / 2;
         py = (height - ph) / 2;
-        cx = px + 52;
-        cw = pw - 60;
-        top = py + 34;
-        applyY = py + ph - 8 - applyH;
+        switch (layout) {
+            case L_CLASSIC -> { cx = px + 120; cw = pw - 128; top = py + 34; }
+            case L_TABS -> { cx = px + 10; cw = pw - 20; top = py + 60; }
+            case L_RAIL -> { cx = px + 52; cw = pw - 60; top = py + 34; }
+            default -> { cx = px + 10; cw = pw - 20; top = py + 34; }
+        }
+        applyY = py + ph - 8 - applyH - (layout == L_DOCK ? 38 : 0);
         applyX = cx + cw - applyW;
         bottom = applyY - 8;
 
-        tabStep = Math.max(22, Math.min(34, (ph - 44 - 12) / TABS.length));
+        tabStep = Math.max(22, Math.min(34, (ph - 44 - 12 - (layout == L_CLASSIC ? 44 : 0)) / TABS.length));
         tabH = Math.min(28, tabStep - 4);
-        for (int i = 0; i < TABS.length; i++) {
-            final int idx = i;
-            hit("tab" + i, px + 8, py + 44 + i * tabStep, 34, tabH, () -> setTab(idx));
+
+        // navigation click areas
+        if (layout == L_DOCK) {
+            for (int i = 0; i < TABS.length; i++) {
+                final int idx = i;
+                hit("tab" + i, dockX(i), dockY(), 30, 30, () -> setTab(idx));
+            }
+        } else if (layout == L_RADIAL) {
+            hit("menu", px + 8, py + 8, 20, 20, () -> { radialOpen = !radialOpen; init(); });
+            if (radialOpen) {
+                for (int i = 0; i < TABS.length; i++) {
+                    final int idx = i;
+                    int[] p = wheelPos(i);
+                    hit("tab" + i, p[0] - 17, p[1] - 17, 34, 34, () -> setTab(idx));
+                }
+            }
+        } else {
+            for (int i = 0; i < TABS.length; i++) {
+                final int idx = i;
+                int[] r = navRect(i);
+                hit("tab" + i, r[0], r[1], r[2], r[3], () -> setTab(idx));
+            }
         }
-        hit("close", px + pw - 26, py + 10, 16, 16, this::onClose);
+
+        // header geometry: [title] ... [search] [status pill] [name pill] [x]
+        closeX = px + pw - 26;
+        String name = Minecraft.getInstance().getUser().getName();
+        nameW = font.width(name) + 16 + 22;
+        nameX = closeX - 8 - nameW;
+        stW = Math.max(font.width("Changes pending"), Math.max(font.width("Up to date"), font.width("Restart to apply"))) + 26;
+        stX = nameX - 8 - stW;
+        searchW = Math.min(130, stX - 8 - (cx + (layout == L_RADIAL ? 26 : 0) + 96));
+        searchX = stX - 8 - searchW;
+        searchActive = searchW >= 70;
+        if (searchActive) {
+            search = new EditBox(font, searchX + 20, py + 13, searchW - 26, 12, Component.literal("Search"));
+            search.setBordered(false);
+            search.setMaxLength(32);
+            search.setHint(Component.literal("Search  Ctrl K").withStyle(ChatFormatting.DARK_GRAY));
+            building = true;
+            search.setValue(searchText);
+            building = false;
+            search.setResponder(s -> {
+                if (building) return;
+                searchText = s;
+                page = 0;
+                if (tab != T_PACKS) { tab = T_PACKS; restartEntrance(1); }
+                dirty = true;
+                refocus = true;
+            });
+            addWidget(search); // drawn manually in drawHeader so it sits on top of the panel
+        }
+
+        hit("close", closeX, py + 10, 16, 16, this::onClose);
         hit("apply", applyX, applyY, applyW, applyH, this::apply);
 
         rowGroups = new ArrayList<>();
         srcRows = new ArrayList<>();
+        if (layout == L_RADIAL && radialOpen) return; // wheel covers the content
         switch (tab) {
             case T_PACKS -> initPacks();
             case T_TRIMS -> initTrims();
@@ -206,10 +334,13 @@ public class ToggleScreen extends Screen {
     }
 
     private List<Group> visible() {
+        String q = searchText.trim().toLowerCase(Locale.ROOT);
         List<Group> out = new ArrayList<>();
         for (Group g : Group.ALL) {
             boolean mc = MC_IDS.contains(g.id()), misc = MISC_IDS.contains(g.id());
-            if (chip == 0 || (chip == 1 && mc) || (chip == 2 && !mc && !misc) || (chip == 3 && misc)) out.add(g);
+            boolean inChip = chip == 0 || (chip == 1 && mc) || (chip == 2 && !mc && !misc) || (chip == 3 && misc);
+            boolean match = q.isEmpty() || g.label().toLowerCase(Locale.ROOT).contains(q) || g.id().toLowerCase(Locale.ROOT).contains(q);
+            if (inChip && match) out.add(g);
         }
         return out;
     }
@@ -259,19 +390,51 @@ public class ToggleScreen extends Screen {
         }
     }
 
-    private int gridCellH() { return Math.max(22, Math.min(46, (bottom - top - 16 - 3 * 18 - 14) / 3 - 4)); }
+    // ---- settings pages ----
+    private int layCardW() { return (cw - 12 - 4 * 6) / 5; }
+
+    private int layCardH() { return Math.max(56, Math.min(96, bottom - top - 22 - 6)); }
+
+    private int themeRows() { return Math.max(1, (Theme.ALL.size() + 3) / 4); }
+
+    private int themeCellH() {
+        int r = themeRows();
+        return Math.max(20, Math.min(46, (bottom - top - 26 - (r - 1) * 4) / r));
+    }
+
+    private int dispCardW() { return (cw - 8) / 2; }
 
     private void initSettings() {
-        int cellH = gridCellH(), gw = (cw - 5 * 6) / 4;
-        for (int i = 0; i < Theme.ALL.size(); i++) {
-            final Theme t = Theme.ALL.get(i);
-            int x = cx + 6 + (i % 4) * (gw + 6), y = top + 16 + (i / 4) * (cellH + 4);
-            hit("th" + i, x, y, gw, cellH, () -> { Config.theme = t.id(); theme = t; });
+        int chipX = cx + 8;
+        for (int i = 0; i < SET_CHIPS.length; i++) {
+            final int idx = i;
+            int w = font.width(SET_CHIPS[i]) + 14;
+            hit("schip" + i, chipX, top, w, 16, () -> { setChip = idx; restartEntrance(1); init(); });
+            chipX += w + 4;
         }
-        int oy = top + 16 + 3 * (cellH + 4) + 6;
-        hit("opt0", cx + 6, oy, cw - 12, 16, () -> Config.anim = !Config.anim);
-        hit("opt1", cx + 6, oy + 18, cw - 12, 16, () -> Config.intensity = (Config.intensity + 1) % 3);
-        hit("opt2", cx + 6, oy + 36, cw - 12, 16, () -> Config.glow = !Config.glow);
+        int y0 = top + 22;
+        if (setChip == 0) {
+            int gw = layCardW(), gh = layCardH();
+            for (int i = 0; i < LAYOUTS.length; i++) {
+                final int idx = i;
+                hit("lay" + i, cx + 6 + i * (gw + 6), y0, gw, gh, () -> setLayout(idx));
+            }
+        } else if (setChip == 1) {
+            int cellH = themeCellH(), gw = (cw - 5 * 6) / 4;
+            for (int i = 0; i < Theme.ALL.size(); i++) {
+                final Theme t = Theme.ALL.get(i);
+                int x = cx + 6 + (i % 4) * (gw + 6), y = y0 + (i / 4) * (cellH + 4);
+                hit("th" + i, x, y, gw, cellH, () -> { Config.theme = t.id(); theme = t; });
+            }
+        } else {
+            int dw = dispCardW();
+            hit("opt0", cx + 6, y0 + 22, dw - 12, 16, () -> Config.anim = !Config.anim);
+            hit("opt1", cx + 6, y0 + 40, dw - 12, 16, () -> Config.intensity = (Config.intensity + 1) % 3);
+            hit("opt2", cx + 6, y0 + 58, dw - 12, 16, () -> Config.glow = !Config.glow);
+            int rx = cx + dw + 8, bw = (dw - 24) / 2;
+            hit("allon2", rx + 8, y0 + 48, bw, 18, () -> { for (Group g : Group.ALL) Config.disabled.remove(g.id()); });
+            hit("alloff2", rx + 16 + bw, y0 + 48, bw, 18, () -> { for (Group g : Group.ALL) Config.disabled.add(g.id()); });
+        }
     }
 
     // ---------------- actions ----------------
@@ -281,14 +444,39 @@ public class ToggleScreen extends Screen {
         try {
             if (PackBuilder.buildAll()) {
                 status = Component.literal("Applied to " + Config.sources.size() + " pack(s)");
+                appliedD = new HashSet<>(Config.disabled);
+                appliedS = new HashSet<>(Config.sources);
+                restartNeeded = false;
                 PackBuilder.selectToggled(Minecraft.getInstance());
             } else {
+                restartNeeded = true;
                 status = Component.literal("A pack is in use - restart the game to apply");
             }
         } catch (Exception e) {
             PackTogglesClient.LOG.warn("Build failed", e);
             status = Component.literal("Failed: " + e.getMessage());
         }
+    }
+
+    // ---------------- input ----------------
+    @Override
+    public boolean keyPressed(KeyEvent e) {
+        int k = e.key();
+        boolean ctrl = (e.modifiers() & GLFW.GLFW_MOD_CONTROL) != 0;
+        boolean typing = search != null && search.isFocused();
+        if (ctrl && k == GLFW.GLFW_KEY_K && search != null) {
+            setFocused(search);
+            search.setFocused(true);
+            return true;
+        }
+        if (typing) {
+            if (k == GLFW.GLFW_KEY_ESCAPE) { search.setFocused(false); setFocused(null); return true; }
+            return super.keyPressed(e);
+        }
+        if (k >= GLFW.GLFW_KEY_1 && k < GLFW.GLFW_KEY_1 + TABS.length) { setTab(k - GLFW.GLFW_KEY_1); return true; }
+        if (k == GLFW.GLFW_KEY_L) { setLayout(layout + 1); return true; }
+        if (k == GLFW.GLFW_KEY_TAB && layout == L_RADIAL) { radialOpen = !radialOpen; init(); return true; }
+        return super.keyPressed(e);
     }
 
     // ---------------- drawing ----------------
@@ -312,6 +500,12 @@ public class ToggleScreen extends Screen {
 
     @Override
     public void render(GuiGraphics g, int mx, int my, float partial) {
+        if (dirty) { // search text changed: rebuild click areas, keep typing
+            dirty = false;
+            init();
+            if (refocus && search != null) { setFocused(search); search.setFocused(true); }
+            refocus = false;
+        }
         long now = System.nanoTime();
         dt = Math.min(0.05f, (now - lastNanos) / 1e9f);
         lastNanos = now;
@@ -346,8 +540,8 @@ public class ToggleScreen extends Screen {
         }
         g.disableScissor();
 
-        drawSidebar(g);
-        drawHeader(g);
+        drawNav(g);
+        drawHeader(g, mx, my, partial);
 
         // content: slides in from the side + fades in on every tab / page / chip change
         float e = eo(tabT);
@@ -370,62 +564,184 @@ public class ToggleScreen extends Screen {
         g.disableScissor();
 
         drawBottom(g);
+        if (layout == L_RADIAL && radialOpen) drawWheel(g);
+        drawTooltips(g);
 
         // open animation: panel fades up from dark
         float o = 1f - openT;
         if (o > 0.01f) round(g, px, py, pw, ph, alpha(0x000000, o * o));
     }
 
-    private void drawSidebar(GuiGraphics g) {
-        round(g, px + 6, py + 6, 38, ph - 12, mix(cCard, cBg, 0.3f));
-        disc(g, px + 25, py + 23, 11, alpha(cAccent, 0.25f));
-        disc(g, px + 25, py + 23, 8, cAccent);
-        disc(g, px + 25, py + 23, 4, cAccent2);
-
-        // spring-driven highlight: glides to the selected tab and overshoots a little
-        float target = py + 44 + tab * tabStep;
-        if (Float.isNaN(selY)) selY = target;
-        for (int s = 0; s < 4; s++) {
-            float h = dt / 4f;
-            selV += (320f * (target - selY) - 26f * selV) * h;
-            selY += selV * h;
-        }
-        int sy = Math.round(selY);
-        round(g, px + 8, sy, 34, tabH, alpha(cAccent, 0.95f));
-        g.fill(px + 6, sy + 6, px + 8, sy + tabH - 6, cAccent2);
-
-        for (int i = 0; i < TABS.length; i++) {
-            float hv = ease("tabhov" + i, hov("tab" + i) ? 1 : 0, 16);
-            int by = py + 44 + i * tabStep;
-            float sel = Math.max(0f, Math.min(1f, 1f - Math.abs(by - selY) / (float) tabStep)); // how much the highlight covers this icon
-            if (hv > 0.02f && sel < 0.9f) round(g, px + 8, by, 34, tabH, alpha(cAccent, 0.12f * hv));
-            icon(g, i, px + 18, by + (tabH - 14) / 2, mix(TEXT, cBg, sel), mix(cBg, cAccent, sel));
+    // ---- navigation drawing ----
+    private void drawNav(GuiGraphics g) {
+        switch (layout) {
+            case L_DOCK -> drawDock(g);
+            case L_RADIAL -> drawRadialButton(g);
+            case L_TABS -> drawTabsRow(g);
+            default -> drawSidebar(g, layout == L_CLASSIC);
         }
     }
 
-    private void drawHeader(GuiGraphics g) {
+    /** Spring-driven highlight: glides to the selected item and overshoots a little. */
+    private void springTo(int[] r) {
+        if (Float.isNaN(selX)) { selX = r[0]; selY = r[1]; selVX = 0; selVY = 0; }
+        for (int s = 0; s < 4; s++) {
+            float h = dt / 4f;
+            selVX += (320f * (r[0] - selX) - 26f * selVX) * h;
+            selX += selVX * h;
+            selVY += (320f * (r[1] - selY) - 26f * selVY) * h;
+            selY += selVY * h;
+        }
+    }
+
+    private void drawSidebar(GuiGraphics g, boolean classic) {
+        int sbw = classic ? 106 : 38;
+        round(g, px + 6, py + 6, sbw, ph - 12, mix(cCard, cBg, 0.3f));
+        disc(g, px + 25, py + 23, 11, alpha(cAccent, 0.25f));
+        disc(g, px + 25, py + 23, 8, cAccent);
+        disc(g, px + 25, py + 23, 4, cAccent2);
+        if (classic) bold(g, "Toggles", px + 42, py + 19, TEXT);
+
+        int[] tr = navRect(tab);
+        springTo(tr);
+        int hx = Math.round(selX), hy = Math.round(selY);
+        int hw = Math.round(ease("selw", tr[2], 14)), hh = Math.round(ease("selh", tr[3], 14));
+        round(g, hx, hy, hw, hh, alpha(cAccent, 0.95f));
+        g.fill(px + 6, hy + 6, px + 8, hy + hh - 6, cAccent2);
+
+        for (int i = 0; i < TABS.length; i++) {
+            int[] r = navRect(i);
+            float hv = ease("tabhov" + i, hov("tab" + i) ? 1 : 0, 16);
+            float sel = ease("tabsel" + i, tab == i ? 1 : 0, 14);
+            if (hv > 0.02f && sel < 0.9f) round(g, r[0], r[1], r[2], r[3], alpha(cAccent, 0.12f * hv));
+            icon(g, i, r[0] + 10, r[1] + (r[3] - 14) / 2, mix(TEXT, cBg, sel), mix(cBg, cAccent, sel));
+            if (classic) text(g, TABS[i], r[0] + 30, r[1] + (r[3] - 8) / 2, mix(TEXT, cBg, sel));
+        }
+
+        if (classic) { // "wallet" card: how many groups are on
+            int wy = py + ph - 50;
+            if (wy > py + 44 + TABS.length * tabStep + 2) {
+                int total = Group.ALL.size(), off = 0;
+                for (Group gr : Group.ALL) if (Config.disabled.contains(gr.id())) off++;
+                card(g, px + 10, wy, 98, 38);
+                text(g, "Enabled", px + 17, wy + 7, muted());
+                bold(g, (total - off) + " / " + total, px + 17, wy + 21, GREEN);
+            }
+        }
+    }
+
+    private void drawTabsRow(GuiGraphics g) {
+        int[] tr = navRect(tab);
+        springTo(tr);
+        int hw = Math.round(ease("selw", tr[2], 14));
+        round(g, Math.round(selX), Math.round(selY), hw, tr[3], alpha(cAccent, 0.95f));
+        for (int i = 0; i < TABS.length; i++) {
+            int[] r = navRect(i);
+            float hv = ease("tabhov" + i, hov("tab" + i) ? 1 : 0, 16);
+            float sel = ease("tabsel" + i, tab == i ? 1 : 0, 14);
+            if (sel < 0.9f) round(g, r[0], r[1], r[2], r[3], alpha(cAccent, 0.06f + 0.14f * hv));
+            if (sel > 0.5f) round(g, r[0], r[1], r[2], r[3], alpha(cAccent, 0.95f));
+            text(g, TABS[i], r[0] + 8, r[1] + 6, mix(TEXT, cBg, sel));
+        }
+    }
+
+    private void drawDock(GuiGraphics g) {
+        int dockW = TABS.length * 38 - 8;
+        round(g, dockX(0) - 10, dockY() - 8, dockW + 20, 46, mix(cCard, cBg, 0.3f));
+        for (int i = 0; i < TABS.length; i++) {
+            float hv = ease("dock" + i, hov("tab" + i) ? 1 : 0, 16);
+            float sel = ease("tabsel" + i, tab == i ? 1 : 0, 14);
+            int grow = Math.round(8 * hv);
+            int x = dockX(i) - grow / 2, y = dockY() - grow, w = 30 + grow;
+            round(g, x, y, w, w, mix(mix(cCard, TEXT, 0.06f), cAccent, 0.15f + 0.8f * sel));
+            icon(g, i, x + (w - 14) / 2, y + (w - 14) / 2, mix(TEXT, cBg, sel), mix(mix(cCard, TEXT, 0.06f), cAccent, 0.15f + 0.8f * sel));
+        }
+    }
+
+    private void drawRadialButton(GuiGraphics g) {
+        float hv = ease("menuhov", hov("menu") ? 1 : 0, 14);
+        round(g, px + 8, py + 8, 20, 20, mix(cCard, cAccent, 0.25f + 0.5f * hv + (radialOpen ? 0.3f : 0f)));
+        disc(g, px + 18, py + 18, 5, cBg);
+        disc(g, px + 18, py + 18, 3, cAccent2);
+    }
+
+    private void drawWheel(GuiGraphics g) {
+        g.fill(cx - 2, top - 2, cx + cw + 2, bottom + 2, alpha(0x000000, 0.65f));
+        int ccx = cx + cw / 2, ccy = top + (bottom - top) / 2;
+        disc(g, ccx, ccy, 22, alpha(cAccent, 0.18f));
+        disc(g, ccx, ccy, 6, cAccent);
+        for (int i = 0; i < TABS.length; i++) {
+            int[] p = wheelPos(i);
+            float hv = ease("wheel" + i, hov("tab" + i) ? 1 : 0, 16);
+            float sel = tab == i ? 1f : 0f;
+            int r = 16 + Math.round(3 * hv);
+            disc(g, p[0], p[1], r + 3, alpha(cAccent, 0.2f + 0.3f * hv));
+            disc(g, p[0], p[1], r, mix(mix(cCard, TEXT, 0.08f), cAccent, 0.2f + 0.7f * Math.max(sel, hv)));
+            icon(g, i, p[0] - 7, p[1] - 7, mix(TEXT, cBg, Math.max(sel, hv)), mix(cCard, cAccent, Math.max(sel, hv)));
+            text(g, TABS[i], p[0] - font.width(TABS[i]) / 2, p[1] + r + 6, TEXT);
+        }
+        String hint = "Tab to close";
+        text(g, hint, ccx - font.width(hint) / 2, bottom - 12, muted());
+    }
+
+    private void tooltip(GuiGraphics g, String s, int x, int y, boolean centered) {
+        int w = font.width(s) + 10;
+        if (centered) x -= w / 2;
+        round(g, x, y, w, 16, cLine);
+        round(g, x + 1, y + 1, w - 2, 14, cCard);
+        text(g, s, x + 5, y + 4, TEXT);
+    }
+
+    private void drawTooltips(GuiGraphics g) {
+        for (int i = 0; i < TABS.length; i++) {
+            if (!hov("tab" + i)) continue;
+            String s = TABS[i] + " [" + (i + 1) + "]";
+            if (layout == L_RAIL) {
+                int[] r = navRect(i);
+                tooltip(g, s, r[0] + r[2] + 6, r[1] + (r[3] - 16) / 2, false);
+            } else if (layout == L_DOCK) {
+                tooltip(g, s, dockX(i) + 15, dockY() - 26, true);
+            }
+        }
+    }
+
+    private void drawHeader(GuiGraphics g, int mx, int my, float partial) {
         // title slides in from the side the new tab came from
         float e = eo(tabT);
-        int tx = cx + (int) ((1f - e) * 14f * tabDir);
+        int tx = cx + (layout == L_RADIAL ? 26 : 0) + (int) ((1f - e) * 14f * tabDir);
         g.drawString(font, Component.literal(TABS[tab]).withStyle(ChatFormatting.BOLD), tx, py + 12, alpha(TEXT, Math.max(0.08f, e)), false);
+
+        // search pill
+        if (searchActive && search != null) {
+            boolean focus = search.isFocused();
+            round(g, searchX - 1, py + 7, searchW + 2, 22, focus ? mix(cCard, cAccent, 0.6f) : cLine);
+            round(g, searchX, py + 8, searchW, 20, mix(cCard, cBg, 0.2f));
+            disc(g, searchX + 10, py + 17, 4, muted());
+            disc(g, searchX + 10, py + 17, 2, mix(cCard, cBg, 0.2f));
+            g.fill(searchX + 13, py + 20, searchX + 15, py + 22, muted());
+            search.render(g, mx, my, partial);
+        }
+
+        // status pill
+        round(g, stX, py + 8, stW, 20, mix(cCard, cBg, 0.2f));
+        disc(g, stX + 10, py + 18, 3, pillColor());
+        text(g, pillLabel(), stX + 18, py + 14, mix(TEXT, cBg, 0.15f));
+
         // skin + name
         String name = Minecraft.getInstance().getUser().getName();
-        int nameW = font.width(name);
-        int closeX = px + pw - 26;
-        int pillW = nameW + 16 + 22;
-        int pillX = closeX - 8 - pillW;
-        round(g, pillX, py + 8, pillW, 20, mix(cCard, cBg, 0.2f));
-        try { PlayerFaceRenderer.draw(g, skin(), pillX + 3, py + 10, 16); } catch (Exception ignored) { }
-        text(g, name, pillX + 24, py + 14, TEXT);
-        String src = "Sources: " + Config.sources.size();
-        text(g, src, pillX - 8 - font.width(src), py + 14, muted());
+        round(g, nameX, py + 8, nameW, 20, mix(cCard, cBg, 0.2f));
+        try { PlayerFaceRenderer.draw(g, skin(), nameX + 3, py + 10, 16); } catch (Exception ignored) { }
+        text(g, name, nameX + 24, py + 14, TEXT);
+
         boolean hc = hov("close");
         round(g, closeX, py + 10, 16, 16, hc ? RED : cCard);
         text(g, "x", closeX + 5, py + 14, TEXT);
     }
 
     private void drawBottom(GuiGraphics g) {
-        text(g, fit(status.getString(), cw - applyW - 16), cx + 2, applyY + 8, muted());
+        String msg = status.getString();
+        if (msg.isEmpty()) msg = "1-5 tabs  |  L layout  |  Ctrl+K search";
+        text(g, fit(msg, cw - applyW - 16), cx + 2, applyY + 8, muted());
         float h = ease("applyhov", hov("apply") ? 1 : 0, 14);
         round(g, applyX - 1, applyY - 1, applyW + 2, applyH + 2, alpha(cAccent2, 0.25f * h));
         round(g, applyX, applyY, applyW, applyH, mix(cAccent, cAccent2, h * 0.5f));
@@ -505,6 +821,9 @@ public class ToggleScreen extends Screen {
         text(g, pg, cx + cw - 132 - font.width(pg), top + 4, muted());
 
         card(g, cx, top + 20, cw, bottom - top - 20);
+        if (rowGroups.isEmpty()) {
+            text(g, searchText.isEmpty() ? "Nothing in this category" : "No groups match \"" + fit(searchText, 160) + "\"", cx + 14, top + 32, muted());
+        }
         for (int i = 0; i < rowGroups.size(); i++) {
             Group gr = rowGroups.get(i);
             boolean enabled = !Config.disabled.contains(gr.id());
@@ -514,9 +833,7 @@ public class ToggleScreen extends Screen {
             if (hv > 0.02f) round(g, cx + 6 + dx, ry, cw - 12, rowH - 2, alpha(cAccent, 0.12f * hv));
             float sw = ease("sw" + gr.id(), enabled ? 1 : 0, 16);
             text(g, fit(gr.label(), cw - 90), cx + 14 + (int) (2 * hv) + dx, ry + 6, mix(muted(), TEXT, sw));
-            int sx = cx + cw - 14 - 26 + dx, sy = ry + 4;
-            round(g, sx, sy, 26, 12, mix(mix(cCard, TEXT, 0.15f), cAccent, sw));
-            round(g, sx + 1 + (int) (14 * sw), sy + 1, 10, 10, 0xFFFFFFFF);
+            toggleSwitch(g, cx + cw - 14 - 26 + dx, ry + 4, sw);
         }
     }
 
@@ -561,9 +878,7 @@ public class ToggleScreen extends Screen {
         if (hv > 0.02f) round(g, x0, top, w, 30, alpha(cAccent, 0.10f * hv));
         bold(g, "Armor trims", x0 + 10, top + 6, TEXT);
         text(g, enabled ? "Kept in pack" : "Removed from pack", x0 + 10, top + 17, enabled ? GREEN : RED);
-        int tsx = x0 + w - 14 - 26, tsy = top + 9;
-        round(g, tsx, tsy, 26, 12, mix(mix(cCard, TEXT, 0.15f), cAccent, sw));
-        round(g, tsx + 1 + (int) (14 * sw), tsy + 1, 10, 10, 0xFFFFFFFF);
+        toggleSwitch(g, x0 + w - 14 - 26, top + 9, sw);
 
         // ---- right middle: pattern chips with a travelling highlight wave ----
         boolean mats = h >= 120;
@@ -625,12 +940,71 @@ public class ToggleScreen extends Screen {
         }
     }
 
+    // ---- settings ----
     private void drawSettings(GuiGraphics g) {
-        text(g, "Theme", cx + 4, top + 2, muted());
-        int cellH = gridCellH(), gw = (cw - 5 * 6) / 4;
+        int chipX = cx + 8;
+        for (int i = 0; i < SET_CHIPS.length; i++) {
+            int w = font.width(SET_CHIPS[i]) + 14;
+            float sel = ease("schip" + i, setChip == i ? 1 : 0, 14);
+            round(g, chipX, top, w, 16, mix(cCard, cAccent, 0.15f + 0.8f * sel));
+            text(g, SET_CHIPS[i], chipX + 7, top + 4, mix(TEXT, cBg, sel));
+            chipX += w + 4;
+        }
+        int y0 = top + 22;
+        if (setChip == 0) drawLayoutPage(g, y0);
+        else if (setChip == 1) drawThemePage(g, y0);
+        else drawDisplayPage(g, y0);
+    }
+
+    private void layoutPreview(GuiGraphics g, int i, int x, int y, int w, int h, int accent) {
+        int body = mix(cCard, cBg, 0.55f), bar = mix(cCard, TEXT, 0.22f);
+        round(g, x, y, w, h, body);
+        switch (i) {
+            case L_CLASSIC -> {
+                g.fill(x + 2, y + 2, x + 2 + w / 3, y + h - 2, bar);
+                for (int k = 0; k < 3; k++) g.fill(x + 4, y + 5 + k * 5, x + w / 3, y + 7 + k * 5, k == 0 ? accent : mix(bar, TEXT, 0.25f));
+            }
+            case L_RAIL -> {
+                g.fill(x + 2, y + 2, x + 8, y + h - 2, bar);
+                for (int k = 0; k < 3; k++) g.fill(x + 3, y + 5 + k * 5, x + 7, y + 7 + k * 5, k == 0 ? accent : mix(bar, TEXT, 0.25f));
+            }
+            case L_TABS -> {
+                for (int k = 0; k < 3; k++) round(g, x + 3 + k * 12, y + 3, 10, 4, k == 0 ? accent : bar);
+            }
+            case L_DOCK -> {
+                for (int k = 0; k < 4; k++) round(g, x + w / 2 - 14 + k * 8, y + h - 7, 6, 4, k == 1 ? accent : bar);
+            }
+            default -> {
+                int ccx = x + w / 2, ccy = y + h / 2, r = Math.max(4, Math.min(w, h) / 3);
+                for (int k = 0; k < 5; k++) {
+                    double a = -Math.PI / 2 + k * 2 * Math.PI / 5;
+                    disc(g, ccx + (int) Math.round(r * Math.cos(a)), ccy + (int) Math.round(r * Math.sin(a)), 2, k == 0 ? accent : bar);
+                }
+            }
+        }
+    }
+
+    private void drawLayoutPage(GuiGraphics g, int y0) {
+        text(g, "Where the navigation lives. Press L anywhere to cycle.", cx + 4, y0 - 2 + 0, muted());
+        int gw = layCardW(), gh = layCardH(), yy = y0 + 10;
+        for (int i = 0; i < LAYOUTS.length; i++) {
+            int x = cx + 6 + i * (gw + 6), y = yy + (int) ((1f - stag(i)) * 12f);
+            boolean sel = layout == i;
+            float hv = ease("layhov" + i, hov("lay" + i) ? 1 : 0, 14), sv = ease("laysel" + i, sel ? 1 : 0, 12);
+            round(g, x - 1, y - 1, gw + 2, gh - 8, mix(cLine, cAccent, 0.25f * hv + 0.85f * sv));
+            round(g, x, y, gw, gh - 10, cCard);
+            layoutPreview(g, i, x + 5, y + 5, gw - 10, Math.max(14, gh - 10 - 40), cAccent);
+            bold(g, fit(LAYOUTS[i], gw - 24), x + 6, y + gh - 10 - 32, mix(TEXT, cAccent, sv * 0.5f));
+            text(g, fit(LAYOUT_SUB[i], gw - 10), x + 6, y + gh - 10 - 20, muted());
+            if (sv > 0.5f) { disc(g, x + gw - 10, y + gh - 10 - 28, 5, cAccent); g.fill(x + gw - 13, y + gh - 10 - 28, x + gw - 11, y + gh - 10 - 26, cBg); g.fill(x + gw - 11, y + gh - 10 - 26, x + gw - 7, y + gh - 10 - 25, cBg); }
+        }
+    }
+
+    private void drawThemePage(GuiGraphics g, int y0) {
+        int cellH = themeCellH(), gw = (cw - 5 * 6) / 4;
         for (int i = 0; i < Theme.ALL.size(); i++) {
             Theme t = Theme.ALL.get(i);
-            int x = cx + 6 + (i % 4) * (gw + 6), y = top + 16 + (i / 4) * (cellH + 4) + (int) ((1f - stag(i / 4 + i % 4)) * 12f); // cells rise in diagonally
+            int x = cx + 6 + (i % 4) * (gw + 6), y = y0 + (i / 4) * (cellH + 4) + (int) ((1f - stag(i / 4 + i % 4)) * 12f); // cells rise in diagonally
             boolean sel = t.id().equals(Config.theme);
             float hv = ease("thhov" + i, hov("th" + i) ? 1 : 0, 14), sv = ease("thsel" + i, sel ? 1 : 0, 12);
             round(g, x - 1, y - 1, gw + 2, cellH + 2, mix(t.line(), t.accent(), 0.25f * hv + 0.85f * sv));
@@ -642,23 +1016,43 @@ public class ToggleScreen extends Screen {
             disc(g, x + gw - 10, y + 8, 2, t.accent()); disc(g, x + gw - 18, y + 8, 2, t.accent2());
             if (sv > 0.5f) { disc(g, x + gw - 10, y + cellH - 11, 5, t.accent()); g.fill(x + gw - 13, y + cellH - 11, x + gw - 11, y + cellH - 9, t.bg()); g.fill(x + gw - 11, y + cellH - 9, x + gw - 7, y + cellH - 8, t.bg()); }
         }
-        int oy = top + 16 + 3 * (cellH + 4) + 6;
-        optionRow(g, 0, oy, "Animations", null, Config.anim);
-        optionRow(g, 1, oy + 18, "Particle amount", INTENSITY[Config.intensity], true);
-        optionRow(g, 2, oy + 36, "Glow pulse", null, Config.glow);
     }
 
-    private void optionRow(GuiGraphics g, int i, int y, String label, String value, boolean on) {
+    private void drawDisplayPage(GuiGraphics g, int y0) {
+        int dw = dispCardW(), ch = 84;
+        int rx = cx + dw + 8;
+        int la = (int) ((1f - stag(0)) * 14f), lb = (int) ((1f - stag(1)) * 14f);
+
+        // left card: display and effects
+        card(g, cx, y0 + la, dw, ch);
+        bold(g, "Display and effects", cx + 8, y0 + 7 + la, TEXT);
+        optionRow(g, 0, cx + 6, y0 + 22 + la, dw - 12, "Animations", null, Config.anim);
+        optionRow(g, 1, cx + 6, y0 + 40 + la, dw - 12, "Particle amount", INTENSITY[Config.intensity], true);
+        optionRow(g, 2, cx + 6, y0 + 58 + la, dw - 12, "Glow pulse", null, Config.glow);
+
+        // right card: bulk pack switches
+        int total = Group.ALL.size(), off = 0;
+        for (Group gr : Group.ALL) if (Config.disabled.contains(gr.id())) off++;
+        card(g, rx, y0 + lb, dw, ch);
+        bold(g, "Pack toggles", rx + 8, y0 + 7 + lb, TEXT);
+        text(g, (total - off) + " of " + total + " groups on", rx + 8, y0 + 24 + lb, muted());
+        text(g, "Sources: " + Config.sources.size() + " pack(s)", rx + 8, y0 + 35 + lb, muted());
+        int bw = (dw - 24) / 2;
+        round(g, rx + 8, y0 + 48 + lb, bw, 18, hov("allon2") ? mix(cCard, GREEN, 0.5f) : mix(cCard, TEXT, 0.08f));
+        text(g, "Enable all", rx + 8 + (bw - font.width("Enable all")) / 2, y0 + 53 + lb, TEXT);
+        round(g, rx + 16 + bw, y0 + 48 + lb, bw, 18, hov("alloff2") ? mix(cCard, RED, 0.5f) : mix(cCard, TEXT, 0.08f));
+        text(g, "Disable all", rx + 16 + bw + (bw - font.width("Disable all")) / 2, y0 + 53 + lb, TEXT);
+    }
+
+    private void optionRow(GuiGraphics g, int i, int x, int y, int w, String label, String value, boolean on) {
         float hv = ease("opthov" + i, hov("opt" + i) ? 1 : 0, 14);
-        round(g, cx + 6, y, cw - 12, 16, alpha(cAccent, 0.06f + 0.12f * hv));
-        text(g, label, cx + 14, y + 4, TEXT);
+        round(g, x, y, w, 16, alpha(cAccent, 0.06f + 0.12f * hv));
+        text(g, label, x + 8, y + 4, TEXT);
         if (value != null) {
-            text(g, value, cx + cw - 14 - font.width(value), y + 4, cAccent2);
+            text(g, value, x + w - 8 - font.width(value), y + 4, cAccent2);
         } else {
             float sw = ease("optsw" + i, on ? 1 : 0, 16);
-            int sx = cx + cw - 14 - 26, sy = y + 2;
-            round(g, sx, sy, 26, 12, mix(mix(cCard, TEXT, 0.15f), cAccent, sw));
-            round(g, sx + 1 + (int) (14 * sw), sy + 1, 10, 10, 0xFFFFFFFF);
+            toggleSwitch(g, x + w - 8 - 26, y + 2, sw);
         }
     }
 
