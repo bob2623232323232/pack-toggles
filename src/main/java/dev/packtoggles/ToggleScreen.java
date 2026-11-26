@@ -717,7 +717,7 @@ public class ToggleScreen extends Screen {
         EditBox b = new EditBox(font, x + 5, y + 4, w - 10, 12, Component.literal("field"));
         b.setBordered(false);
         b.setMaxLength(120);
-        if (mask) b.setFormatter((s, i) -> FormattedCharSequence.forward("*".repeat(s.length()), Style.EMPTY));
+        if (mask) b.addFormatter((s, i) -> FormattedCharSequence.forward("*".repeat(s.length()), Style.EMPTY));
         building = true;
         b.setValue(value);
         building = false;
