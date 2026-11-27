@@ -59,8 +59,8 @@ import java.util.stream.Stream;
  */
 public class ToggleScreen extends Screen {
     private static final int TEXT = 0xFFF5E8DD, GREEN = 0xFF58D26F, RED = 0xFFE0564F, AMBER = 0xFFF0B429;
-    private static final String[] TABS = {"Trims", "Wardrobe", "Skin", "Discord", "Cape", "Players", "Stats", "Settings"};
-    private static final int T_TRIMS = 0, T_WARDROBE = 1, T_SKIN = 2, T_DISCORD = 3, T_CAPE = 4, T_PLAYERS = 5, T_STATS = 6, T_SETTINGS = 7;
+    private static final String[] TABS = {"Trims", "Wardrobe", "Skin", "Discord", "Cape", "Players", "Stats", "Target", "Training", "Settings"};
+    private static final int T_TRIMS = 0, T_WARDROBE = 1, T_SKIN = 2, T_DISCORD = 3, T_CAPE = 4, T_PLAYERS = 5, T_STATS = 6, T_TARGET = 7, T_TRAIN = 8, T_SETTINGS = 9;
     private static final String[] INTENSITY = {"Low", "Medium", "High"};
     private static final String[] SET_CHIPS = {"Layout", "Theme", "Display", "Colors"};
     private static final String[] SPEED = {"Slow", "Normal", "Fast"};
@@ -579,6 +579,8 @@ public class ToggleScreen extends Screen {
             case T_DISCORD -> initDiscordTab();
             case T_CAPE -> initCape();
             case T_PLAYERS -> initPlayers();
+            case T_TARGET -> initTarget();
+            case T_TRAIN -> initTrain();
             case T_SETTINGS -> initSettings();
             default -> { }
         }
@@ -874,6 +876,161 @@ public class ToggleScreen extends Screen {
         chip(g, "psave", new int[]{rx, ty + 48, 77, 18}, "Save copy", 0, cAccent);
         chip(g, "pback", new int[]{rx, ty + 70, 77, 18}, "Back", 0, cAccent);
         text(g, skinDirty ? "Not saved yet" : "Saved", rx, ty + 94, skinDirty ? AMBER : muted());
+    }
+
+    // ---- target tab ----
+    private static int targetIdx = 0;
+
+    private List<net.minecraft.world.entity.player.Player> nearbyPlayers() {
+        Minecraft mc = Minecraft.getInstance();
+        List<net.minecraft.world.entity.player.Player> l = new ArrayList<>();
+        if (mc.level == null || mc.player == null) return l;
+        for (net.minecraft.world.entity.player.Player p : mc.level.players()) if (p != mc.player) l.add(p);
+        l.sort(Comparator.comparingDouble(p -> mc.player.distanceToSqr(p)));
+        return l;
+    }
+
+    private void initTarget() {
+        hit("tnext", cx + cw - 96, top + 4, 86, 18, () -> targetIdx++);
+    }
+
+    private String gear(net.minecraft.world.item.ItemStack st) {
+        if (st.isEmpty()) return "-";
+        String n = st.getHoverName().getString();
+        if (st.isDamageableItem() && st.getMaxDamage() > 0) n += "  " + (100 * (st.getMaxDamage() - st.getDamageValue()) / st.getMaxDamage()) + "%";
+        return n;
+    }
+
+    private void drawTarget(GuiGraphics g) {
+        card(g, cx, top, cw, bottom - top);
+        bold(g, "Nearest players", cx + 10, top + 8, TEXT);
+        chip(g, "tnext", new int[]{cx + cw - 96, top + 4, 86, 18}, "Next target", 0, cAccent);
+        List<net.minecraft.world.entity.player.Player> l = nearbyPlayers();
+        if (l.isEmpty()) { text(g, "No other players nearby. Join a world with someone.", cx + 12, top + 30, muted()); return; }
+        targetIdx = Math.floorMod(targetIdx, l.size());
+        net.minecraft.world.entity.player.Player p = l.get(targetIdx);
+        Minecraft mc = Minecraft.getInstance();
+        try { PlayerFaceRenderer.draw(g, skinFor(p.getUUID()), cx + 12, top + 30, 24); } catch (Exception ignored) { }
+        bold(g, p.getName().getString(), cx + 44, top + 31, TEXT);
+        text(g, String.format(Locale.ROOT, "%.1f blocks away   (%d of %d)", mc.player.distanceTo(p), targetIdx + 1, l.size()), cx + 44, top + 43, muted());
+        float hp = p.getHealth(), max = Math.max(1f, p.getMaxHealth());
+        int bw = cw - 24, by = top + 62;
+        g.fill(cx + 12, by, cx + 12 + bw, by + 10, mix(cCard, cBg, 0.6f));
+        g.fill(cx + 12, by, cx + 12 + Math.round(bw * Math.min(1f, hp / max)), by + 10, hp / max > 0.5f ? GREEN : hp / max > 0.25f ? AMBER : RED);
+        String ht = Math.round(hp) + " / " + Math.round(max) + (p.getAbsorptionAmount() > 0 ? "  (+" + Math.round(p.getAbsorptionAmount()) + ")" : "");
+        text(g, ht, cx + 12 + (bw - font.width(ht)) / 2, by + 1, 0xFFFFFFFF);
+        StringBuilder st = new StringBuilder("Armor " + p.getArmorValue());
+        if (p.isSprinting()) st.append("  |  Sprinting");
+        if (p.isCrouching()) st.append("  |  Sneaking");
+        if (p.isUsingItem()) st.append("  |  Using item / blocking");
+        if (p.isOnFire()) st.append("  |  On fire");
+        text(g, fit(st.toString(), cw - 24), cx + 12, by + 16, TEXT);
+        String[] names = {"Main hand", "Helmet", "Chestplate", "Leggings", "Boots"};
+        net.minecraft.world.item.ItemStack[] items = {p.getMainHandItem(), p.getItemBySlot(EquipmentSlot.HEAD), p.getItemBySlot(EquipmentSlot.CHEST),
+                p.getItemBySlot(EquipmentSlot.LEGS), p.getItemBySlot(EquipmentSlot.FEET)};
+        for (int i = 0; i < 5; i++) {
+            int ry = by + 32 + i * 14;
+            if (ry > bottom - 14) break;
+            round(g, cx + 8, ry - 2, cw - 16, 13, alpha(cAccent, 0.06f));
+            text(g, names[i], cx + 14, ry + 1, muted());
+            String v = fit(gear(items[i]), cw - 140);
+            text(g, v, cx + cw - 14 - font.width(v), ry + 1, TEXT);
+        }
+    }
+
+    // ---- training tab: CPS test + aim trainer ----
+    private static final String[] TRAIN_PAGES = {"CPS", "Aim"};
+    private static int trainPage = 0;
+    private static final ArrayDeque<Long> cpsClicks = new ArrayDeque<>();
+    private static double cpsBest = 0;
+    private static final int AIM_R = 10;
+    private static final Random AIM_RND = new Random();
+    private static boolean aimRunning = false;
+    private static long aimEnd = 0, aimSpawn = 0, aimReact = 0;
+    private static int aimX = 0, aimY = 0, aimHits = 0, aimMisses = 0, aimBest = 0;
+
+    private int[] trainArea() {
+        int aw = Math.max(120, cw - 150), ah = Math.max(80, bottom - top - 36);
+        return new int[]{cx + 8, top + 26, aw, ah};
+    }
+
+    private void aimNew() {
+        int[] a = trainArea();
+        aimX = a[0] + AIM_R + 2 + AIM_RND.nextInt(Math.max(1, a[2] - 2 * AIM_R - 4));
+        aimY = a[1] + AIM_R + 2 + AIM_RND.nextInt(Math.max(1, a[3] - 2 * AIM_R - 4));
+        aimSpawn = System.currentTimeMillis();
+    }
+
+    private void trainAction() {
+        if (trainPage == 0) { cpsClicks.clear(); cpsBest = 0; return; }
+        if (aimRunning) { aimRunning = false; return; }
+        aimRunning = true; aimHits = 0; aimMisses = 0; aimReact = 0;
+        aimEnd = System.currentTimeMillis() + 30000L;
+        aimNew();
+    }
+
+    private void initTrain() {
+        int chipX = cx + 8;
+        for (int i = 0; i < TRAIN_PAGES.length; i++) {
+            final int idx = i;
+            int w = font.width(TRAIN_PAGES[i]) + 14;
+            hit("trchip" + i, chipX, top, w, 16, () -> { trainPage = idx; init(); });
+            chipX += w + 4;
+        }
+        int[] a = trainArea();
+        hit("tract", a[0] + a[2] + 12, top + 26 + 90, 126, 18, this::trainAction);
+    }
+
+    private void drawTrain(GuiGraphics g) {
+        int chipX = cx + 8;
+        for (int i = 0; i < TRAIN_PAGES.length; i++) {
+            int w = font.width(TRAIN_PAGES[i]) + 14;
+            float sel = ease("trchip" + i, trainPage == i ? 1 : 0, 14);
+            round(g, chipX, top, w, 16, mix(cCard, cAccent, 0.15f + 0.8f * sel));
+            text(g, TRAIN_PAGES[i], chipX + 7, top + 4, mix(TEXT, cBg, sel));
+            chipX += w + 4;
+        }
+        int[] a = trainArea();
+        int px2 = a[0] + a[2] + 12, pw2 = 126;
+        g.fill(a[0] - 1, a[1] - 1, a[0] + a[2] + 1, a[1] + a[3] + 1, cLine);
+        g.fill(a[0], a[1], a[0] + a[2], a[1] + a[3], mix(cCard, cBg, 0.35f));
+        card(g, px2 - 4, a[1], pw2 + 8, a[3]);
+        long now = System.currentTimeMillis();
+        if (trainPage == 0) {
+            while (!cpsClicks.isEmpty() && now - cpsClicks.peekFirst() > 5000) cpsClicks.removeFirst();
+            int n1 = 0;
+            for (long t : cpsClicks) if (now - t <= 1000) n1++;
+            cpsBest = Math.max(cpsBest, n1);
+            String big = "" + n1;
+            text(g, "Click in this box as fast as you can", a[0] + (a[2] - font.width("Click in this box as fast as you can")) / 2, a[1] + a[3] / 2 - 20, muted());
+            bold(g, big, a[0] + (a[2] - font.width(big)) / 2, a[1] + a[3] / 2 - 4, TEXT);
+            text(g, "CPS", a[0] + (a[2] - font.width("CPS")) / 2, a[1] + a[3] / 2 + 8, muted());
+            bold(g, "Stats", px2, a[1] + 8, TEXT);
+            text(g, "Now: " + n1, px2, a[1] + 24, TEXT);
+            text(g, String.format(Locale.ROOT, "Average (5s): %.1f", cpsClicks.size() / 5.0), px2, a[1] + 38, TEXT);
+            text(g, "Best: " + (int) cpsBest, px2, a[1] + 52, TEXT);
+            chip(g, "tract", new int[]{px2, a[1] + 90, pw2, 18}, "Reset", 0, cAccent);
+        } else {
+            if (aimRunning) {
+                if (now >= aimEnd) { aimRunning = false; aimBest = Math.max(aimBest, aimHits); }
+                else if (now - aimSpawn > 1500) { aimMisses++; aimNew(); }
+            }
+            if (aimRunning) {
+                disc(g, aimX, aimY, AIM_R, cAccent);
+                disc(g, aimX, aimY, AIM_R / 2, 0xFFFFFFFF);
+            } else {
+                String t = aimHits + aimMisses > 0 ? "Round over: " + aimHits + " hits" : "Press Start and click the targets";
+                text(g, t, a[0] + (a[2] - font.width(t)) / 2, a[1] + a[3] / 2 - 4, muted());
+            }
+            int total = aimHits + aimMisses;
+            bold(g, aimRunning ? "Time " + Math.max(0, (aimEnd - now) / 1000) + "s" : "30 second round", px2, a[1] + 8, TEXT);
+            text(g, "Hits: " + aimHits, px2, a[1] + 24, TEXT);
+            text(g, "Misses: " + aimMisses, px2, a[1] + 36, TEXT);
+            text(g, "Accuracy: " + (total == 0 ? "-" : (100 * aimHits / total) + "%"), px2, a[1] + 48, TEXT);
+            text(g, "Avg reaction: " + (aimHits == 0 ? "-" : (aimReact / aimHits) + " ms"), px2, a[1] + 60, TEXT);
+            text(g, "Best round: " + aimBest, px2, a[1] + 72, muted());
+            chip(g, "tract", new int[]{px2, a[1] + 90, pw2, 18}, aimRunning ? "Stop" : "Start", 0, cAccent);
+        }
     }
 
     // ---- players tab ----
@@ -1178,6 +1335,8 @@ public class ToggleScreen extends Screen {
             case T_CAPE -> "Save cape PNG";
             case T_PLAYERS -> "Refresh list";
             case T_STATS -> "Copy my position";
+            case T_TARGET -> "Next target";
+            case T_TRAIN -> trainPage == 0 ? "Reset CPS" : (aimRunning ? "Stop" : "Start aim round");
             default -> "Reset preview";
         };
     }
@@ -1194,6 +1353,8 @@ public class ToggleScreen extends Screen {
             case T_CAPE -> saveCape();
             case T_PLAYERS -> init();
             case T_STATS -> copyPos();
+            case T_TARGET -> targetIdx++;
+            case T_TRAIN -> trainAction();
             default -> { viewYaw = 0.35f; status = Component.literal("Preview reset"); }
         }
     }
@@ -1432,6 +1593,19 @@ public class ToggleScreen extends Screen {
         if (tab == T_TRIMS) {
             if (edge && mx >= prevBox[0] && mx < prevBox[2] && my >= prevBox[1] && my < prevBox[3]) prevDrag = true;
             if (prevDrag) viewYaw = Math.max(-1.2f, Math.min(1.2f, viewYaw + (mx - prevMx) / 45f));
+        } else if (tab == T_TRAIN) {
+            if (edge && left) {
+                int[] a = trainArea();
+                if (mx >= a[0] && mx < a[0] + a[2] && my >= a[1] && my < a[1] + a[3]) {
+                    long now = System.currentTimeMillis();
+                    if (trainPage == 0) cpsClicks.addLast(now);
+                    else if (aimRunning) {
+                        int ddx = mx - aimX, ddy = my - aimY;
+                        if (ddx * ddx + ddy * ddy <= AIM_R * AIM_R) { aimHits++; aimReact += now - aimSpawn; aimNew(); }
+                        else aimMisses++;
+                    }
+                }
+            }
         } else if (tab == T_CAPE) {
             int[] cv = capeCanvas();
             if (mx >= cv[0] && mx < cv[0] + 64 * cv[2] && my >= cv[1] && my < cv[1] + 32 * cv[2]) {
@@ -1676,6 +1850,12 @@ public class ToggleScreen extends Screen {
                 g.fill(x + 1, y + 1, x + 6, y + 6, c); g.fill(x, y + 8, x + 7, y + 14, c);
                 g.fill(x + 8, y + 3, x + 13, y + 8, c); g.fill(x + 7, y + 9, x + 14, y + 14, c);
             }
+            case T_TARGET -> { // crosshair
+                disc(g, x + 7, y + 7, 6, c); disc(g, x + 7, y + 7, 4, bgc); g.fill(x + 6, y, x + 8, y + 14, c); g.fill(x, y + 6, x + 14, y + 8, c);
+            }
+            case T_TRAIN -> { // lightning bolt
+                g.fill(x + 7, y, x + 11, y + 6, c); g.fill(x + 3, y + 6, x + 11, y + 8, c); g.fill(x + 3, y + 8, x + 7, y + 14, c);
+            }
             case T_STATS -> { // bars
                 g.fill(x + 1, y + 8, x + 4, y + 14, c); g.fill(x + 5, y + 4, x + 8, y + 14, c); g.fill(x + 9, y + 1, x + 12, y + 14, c);
             }
@@ -1755,6 +1935,8 @@ public class ToggleScreen extends Screen {
                 case T_CAPE -> drawCape(g, mx, my);
                 case T_PLAYERS -> drawPlayers(g, mx, my);
                 case T_STATS -> drawStats(g);
+                case T_TARGET -> drawTarget(g);
+                case T_TRAIN -> drawTrain(g);
                 case T_SETTINGS -> drawSettings(g);
                 default -> drawTrims(g, mx, my);
             }
@@ -1934,7 +2116,7 @@ public class ToggleScreen extends Screen {
 
     private void drawBottom(GuiGraphics g) {
         String msg = status.getString();
-        if (msg.isEmpty()) msg = tab == T_SKIN ? "Click a skin to load it  |  click the head or preview to pick a color" : "1-8 tabs  |  L layout  |  Ctrl+K search";
+        if (msg.isEmpty()) msg = tab == T_SKIN ? "Click a skin to load it  |  click the head or preview to pick a color" : "1-9 tabs  |  L layout  |  Ctrl+K search";
         text(g, fit(msg, cw - applyW - 16), cx + 2, applyY + 8, muted());
         float h = ease("applyhov", hov("apply") ? 1 : 0, 14);
         round(g, applyX - 1, applyY - 1, applyW + 2, applyH + 2, alpha(cAccent2, 0.25f * h));
