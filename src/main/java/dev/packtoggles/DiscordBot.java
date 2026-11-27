@@ -32,6 +32,7 @@ public final class DiscordBot {
     static volatile String token = "", channelId = "", userId = "", chatChannelId = "";
     static volatile boolean listen = true, autoPost = false, relay = false;
     static volatile boolean logChat = false, hourly = false, sayOn = true, chatEmbeds = true;
+    static volatile boolean lockToken = false, autoConnect = true, scriptsOn = true;
 
     private static volatile boolean running = false;
     private static volatile String status = "Offline";
@@ -331,7 +332,33 @@ public final class DiscordBot {
         String[] parts = content.split("\\s+", 2);
         String cmd = parts[0].toLowerCase(Locale.ROOT), args = parts.length > 1 ? parts[1] : "";
         switch (cmd) {
-            case "!help" -> post("Commands: `!trim`, `!random`, `!set <armor> <pattern> <material>`, `!players`, `!waypoints`, `!mark <name>`, `!help`");
+            case "!help" -> post("Commands: `!trim`, `!random`, `!set <armor> <pattern> <material>`, `!players`, `!waypoints`, `!mark <name>`, `!skin`, `!combo`, `!help`\nScripts (only for the set user ID): `!run <steps>`, `!script <name>`, `!scripts`, `!savescript <name> <steps>`, `!delscript <name>`, `!stop`\nSteps: " + Scripts.HELP);
+            case "!combo" -> post("Combo **" + Extras.combo + "**, best **" + Extras.bestCombo + "**, hits " + Extras.hits + ", hits taken " + Extras.taken);
+            case "!skin" -> {
+                java.nio.file.Path p = net.fabricmc.loader.api.FabricLoader.getInstance().getConfigDir().resolve("trim-studio-skin.png");
+                if (java.nio.file.Files.exists(p)) { postFile("Skin from the Trim Studio editor", "skin.png", java.nio.file.Files.readAllBytes(p)); log("Answered !skin"); }
+                else post("No skin saved yet. Use the Skin tab and press Save skin PNG");
+            }
+            case "!run", "!script", "!scripts", "!savescript", "!delscript", "!stop" -> {
+                if (!scriptsOn) post("Scripts are turned off in Trim Studio");
+                else if (userId.isBlank()) post("Set your Discord user ID in Trim Studio first, scripts only obey that user");
+                else {
+                    String out;
+                    switch (cmd) {
+                        case "!run" -> out = Scripts.run(args);
+                        case "!script" -> out = Scripts.runNamed(args.trim());
+                        case "!scripts" -> out = Scripts.list();
+                        case "!stop" -> out = Scripts.stop();
+                        case "!delscript" -> out = Scripts.delete(args.trim());
+                        default -> {
+                            String[] a = args.trim().split("\\s+", 2);
+                            out = a.length < 2 ? "Usage: `!savescript <name> <steps>`" : Scripts.save(a[0], a[1]);
+                        }
+                    }
+                    post(out);
+                    log("Answered " + cmd);
+                }
+            }
             case "!trim" -> { post(ToggleScreen.loadoutText()); log("Answered !trim"); }
             case "!random" -> { ToggleScreen.randomTrim(); post(ToggleScreen.loadoutText()); log("Answered !random"); }
             case "!set" -> { post(ToggleScreen.setLoadout(args)); log("Answered !set"); }
