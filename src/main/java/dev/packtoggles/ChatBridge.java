@@ -125,6 +125,7 @@ final class ChatBridge {
             for (PlayerInfo p : mc.getConnection().getOnlinePlayers()) {
                 String n = p.getProfile().name();
                 if (n == null || n.isEmpty() || (best != null && n.length() <= best.getProfile().name().length())) continue;
+                if (!prefix.contains(n)) continue;   // cheap check first: compiling a regex per player per chat line lagged big servers
                 if (Pattern.compile("(^|[^A-Za-z0-9_])" + Pattern.quote(n) + "($|[^A-Za-z0-9_])").matcher(prefix).find()) best = p;
             }
             return best;
