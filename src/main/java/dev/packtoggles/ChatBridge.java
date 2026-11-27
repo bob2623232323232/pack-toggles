@@ -19,28 +19,26 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Minecraft chat <-> Discord. Records every chat line the client receives (with its sender, when there is one),
- * posts new lines to the Discord chat channel in batches (so Discord's rate limit is respected), and once an hour
- * uploads the collected chat as a .txt file, but only while the player is actually in a world.
- * Live lines go out as embeds: consecutive lines from the same player share one embed whose author icon is that
- * player's head, and up to 10 embeds go in one message, so heads cost no extra requests.
- * Needs Fabric API (ClientReceiveMessageEvents). Started the first time the bot connects.
+ * Minecraft chat -> Discord. Records every chat line the client receives (with its sender, when
+ * there is one). Discord: new lines are posted in batches as embeds with the sender's head, and an hourly .txt file
+ * is uploaded while the player is in a world.
+ * Needs Fabric API (ClientReceiveMessageEvents). Started when the bot connects.
  */
 final class ChatBridge {
     private static final long HOUR_MS = 60L * 60L * 1000L;
     private static final int MAX_LINES = 20000;
-    private static final int EMBED_TEXT = 900;      // characters of chat per embed
-    private static final int MESSAGE_TEXT = 5000;   // Discord allows 6000 embed characters per message
+    private static final int EMBED_TEXT = 900;
+    private static final int MESSAGE_TEXT = 5000;
 
     /** One received chat line. id/name are null for system and server messages. */
-    record Line(String time, String text, UUID id, String name) {
+    record Line(long ms, String time, String text, UUID id, String name) {
         String plain() { return time + " " + text; }
     }
 
     private static final Object LOCK = new Object();
-    private static final Deque<Line> OUT = new ArrayDeque<>();       // waiting to be posted live
+    private static final Deque<Line> OUT = new ArrayDeque<>();       // waiting to be posted to Discord
     private static final Deque<String> SINCE = new ArrayDeque<>();   // lines since the last hourly file
-    private static final Deque<Line> RECENT = new ArrayDeque<>();    // shown on the Chat tab
+    private static final Deque<Line> RECENT = new ArrayDeque<>();    // shown on the Discord tab
     private static boolean started = false;
     private static long lastFile = System.currentTimeMillis();
 
@@ -63,17 +61,19 @@ final class ChatBridge {
     }
 
     private static void record(Component message, GameProfile sender) {
-        if (message == null || !DiscordBot.isRunning()) return;
+        boolean bot = DiscordBot.isRunning();
+        if (message == null || !bot) return;
         String text = message.getString();
         if (text == null || text.isBlank()) return;
         UUID id = sender != null ? sender.id() : null;
         String name = sender != null ? sender.name() : null;
-        Line line = new Line(new SimpleDateFormat("HH:mm:ss").format(new Date()), text.replace('\n', ' '), id, name);
+        long now = System.currentTimeMillis();
+        Line line = new Line(now, new SimpleDateFormat("HH:mm:ss").format(new Date(now)), text.replace('\n', ' '), id, name);
         synchronized (LOCK) {
             RECENT.addLast(line);
             while (RECENT.size() > 40) RECENT.removeFirst();
-            if (DiscordBot.logChat) { OUT.addLast(line); while (OUT.size() > 500) OUT.removeFirst(); }
-            if (DiscordBot.hourly || DiscordBot.logChat) { SINCE.addLast(line.plain()); while (SINCE.size() > MAX_LINES) SINCE.removeFirst(); }
+            if (bot && DiscordBot.logChat) { OUT.addLast(line); while (OUT.size() > 500) OUT.removeFirst(); }
+            if (bot && (DiscordBot.hourly || DiscordBot.logChat)) { SINCE.addLast(line.plain()); while (SINCE.size() > MAX_LINES) SINCE.removeFirst(); }
         }
     }
 
@@ -91,12 +91,13 @@ final class ChatBridge {
         while (true) {
             try {
                 Thread.sleep(3000);
-                if (!DiscordBot.isRunning() || !DiscordBot.chatReady()) {
+                tick++;
+                if (DiscordBot.isRunning() && DiscordBot.chatReady()) {
+                    flushLive();
+                    if (tick % 20 == 0 && DiscordBot.hourly && inGame() && System.currentTimeMillis() - lastFile >= HOUR_MS) sendLog(false);
+                } else {
                     synchronized (LOCK) { OUT.clear(); }
-                    continue;
                 }
-                flushLive();
-                if (++tick % 20 == 0 && DiscordBot.hourly && inGame() && System.currentTimeMillis() - lastFile >= HOUR_MS) sendLog(false);
             } catch (InterruptedException e) {
                 return;
             } catch (Exception e) {
@@ -105,6 +106,7 @@ final class ChatBridge {
         }
     }
 
+    // ---------------- Discord ----------------
     private static void flushLive() throws Exception {
         List<Line> lines = new ArrayList<>();
         synchronized (LOCK) {
@@ -159,10 +161,7 @@ final class ChatBridge {
         return e;
     }
 
-    /**
-     * Head image for the embed. Real (online-mode) accounts have version 4 UUIDs, so the UUID is used;
-     * offline-mode servers use name-based UUIDs that the skin service doesn't know, so the name is used instead.
-     */
+    /** Online-mode accounts have version 4 UUIDs; offline-mode servers don't, so the name is used instead. */
     private static String headUrl(Line l) {
         if (l.id() != null && l.id().version() == 4) return "https://mc-heads.net/avatar/" + l.id().toString().replace("-", "") + "/32";
         if (l.name() != null && !l.name().isBlank()) return "https://mc-heads.net/avatar/" + URLEncoder.encode(l.name(), StandardCharsets.UTF_8) + "/32";
@@ -176,7 +175,6 @@ final class ChatBridge {
         Thread.sleep(600);
     }
 
-    /** Old style: code blocks of plain text (used when "Show player heads in Discord" is off). */
     private static void flushPlain(List<Line> lines) throws Exception {
         StringBuilder sb = new StringBuilder();
         for (Line l : lines) {
