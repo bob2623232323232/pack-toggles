@@ -320,15 +320,25 @@ public final class DiscordBot {
         });
     }
 
+    /** Runs on the game thread (world data isn't safe to read from here) and waits up to 3 s for the answer. */
+    private static String onGame(java.util.function.Supplier<String> s) {
+        java.util.concurrent.CompletableFuture<String> f = new java.util.concurrent.CompletableFuture<>();
+        Minecraft.getInstance().execute(() -> { try { f.complete(s.get()); } catch (Throwable t) { f.complete("Error: " + t.getMessage()); } });
+        try { return f.get(3, java.util.concurrent.TimeUnit.SECONDS); } catch (Exception e) { return "The game didn't answer in time"; }
+    }
+
     private static void handle(String content) throws Exception {
         String[] parts = content.split("\\s+", 2);
         String cmd = parts[0].toLowerCase(Locale.ROOT), args = parts.length > 1 ? parts[1] : "";
         switch (cmd) {
-            case "!help" -> post("Commands: `!trim`, `!skin`, `!random`, `!set <armor> <pattern> <material>`, `!help`");
+            case "!help" -> post("Commands: `!trim`, `!skin`, `!random`, `!set <armor> <pattern> <material>`, `!players`, `!waypoints`, `!mark <name>`, `!help`");
             case "!trim" -> { post(ToggleScreen.loadoutText()); log("Answered !trim"); }
             case "!skin" -> { postFile("Current skin from Trim Studio", "skin.png", ToggleScreen.skinPng()); log("Answered !skin"); }
             case "!random" -> { ToggleScreen.randomTrim(); post(ToggleScreen.loadoutText()); log("Answered !random"); }
             case "!set" -> { post(ToggleScreen.setLoadout(args)); log("Answered !set"); }
+            case "!players" -> { post(onGame(ToggleScreen::playersText)); log("Answered !players"); }
+            case "!waypoints", "!wp" -> { post(ToggleScreen.waypointsText()); log("Answered !waypoints"); }
+            case "!mark" -> { post(onGame(() -> ToggleScreen.markHere(args.trim()))); log("Answered !mark"); }
             default -> { }
         }
     }
