@@ -58,8 +58,8 @@ import java.util.stream.Stream;
  */
 public class ToggleScreen extends Screen {
     private static final int TEXT = 0xFFF5E8DD, GREEN = 0xFF58D26F, RED = 0xFFE0564F, AMBER = 0xFFF0B429;
-    private static final String[] TABS = {"Trims", "Wardrobe", "Waypoints", "Discord", "Gear", "Players", "Stats", "Voice Chat", "Training", "Settings"};
-    private static final int T_TRIMS = 0, T_WARDROBE = 1, T_WAYPOINTS = 2, T_DISCORD = 3, T_GEAR = 4, T_PLAYERS = 5, T_STATS = 6, T_VOICE = 7, T_TRAIN = 8, T_SETTINGS = 9;
+    private static final String[] TABS = {"Trims", "Wardrobe", "Waypoints", "Discord", "Players", "Combo", "Skin", "Stats", "Voice Chat", "Training", "Settings"};
+    private static final int T_TRIMS = 0, T_WARDROBE = 1, T_WAYPOINTS = 2, T_DISCORD = 3, T_PLAYERS = 4, T_COMBO = 5, T_SKIN = 6, T_STATS = 7, T_VOICE = 8, T_TRAIN = 9, T_SETTINGS = 10;
     private static final String[] INTENSITY = {"Low", "Medium", "High"};
     private static final String[] SET_CHIPS = {"Layout", "Theme", "Display", "Colors"};
     private static final String[] SPEED = {"Slow", "Normal", "Fast"};
@@ -196,6 +196,12 @@ public class ToggleScreen extends Screen {
         DiscordBot.hourly = getb(p, "dc.hourly", false);
         DiscordBot.sayOn = getb(p, "dc.say", true);
         DiscordBot.chatEmbeds = getb(p, "dc.embeds", true);
+        DiscordBot.lockToken = getb(p, "dc.lock", false);
+        DiscordBot.autoConnect = getb(p, "dc.auto", true);
+        DiscordBot.scriptsOn = getb(p, "dc.scripts", true);
+        Extras.wpHud = getb(p, "wp.hud", true);
+        Extras.wpDeath = getb(p, "wp.death", true);
+        Extras.comboHud = getb(p, "combo.hud", true);
         wardrobe.clear();
         for (String s : p.getProperty("wardrobe", "").split(";")) if (!s.isBlank() && entry(s) != null) wardrobe.add(s);
     }
@@ -228,6 +234,12 @@ public class ToggleScreen extends Screen {
         p.setProperty("dc.hourly", "" + DiscordBot.hourly);
         p.setProperty("dc.say", "" + DiscordBot.sayOn);
         p.setProperty("dc.embeds", "" + DiscordBot.chatEmbeds);
+        p.setProperty("dc.lock", "" + DiscordBot.lockToken);
+        p.setProperty("dc.auto", "" + DiscordBot.autoConnect);
+        p.setProperty("dc.scripts", "" + DiscordBot.scriptsOn);
+        p.setProperty("wp.hud", "" + Extras.wpHud);
+        p.setProperty("wp.death", "" + Extras.wpDeath);
+        p.setProperty("combo.hud", "" + Extras.comboHud);
         p.setProperty("wardrobe", String.join(";", wardrobe));
         try (OutputStream out = Files.newOutputStream(prefsPath())) { p.store(out, "Trim Studio settings (contains your Discord bot token, keep private)"); }
         catch (Exception e) { PackTogglesClient.LOG.warn("Could not save Trim Studio settings", e); }
@@ -282,7 +294,7 @@ public class ToggleScreen extends Screen {
     private static Path waypointPath() { return FabricLoader.getInstance().getConfigDir().resolve("trim-studio-waypoints.txt"); }
 
     /** Each line: name TAB x TAB y TAB z TAB dimension. */
-    private static List<String[]> loadWaypoints() {
+    static List<String[]> loadWaypoints() {
         List<String[]> out = new ArrayList<>();
         try {
             if (!Files.exists(waypointPath())) return out;
@@ -313,15 +325,14 @@ public class ToggleScreen extends Screen {
         String n = name == null ? "" : name.replaceAll("[\\t\\r\\n]+", " ").trim();
         if (n.length() > 32) n = n.substring(0, 32);
         if (n.isEmpty()) n = "Waypoint " + (l.size() + 1);
-        String dim = mc.level.dimension().toString();
-        int slash = dim.indexOf("/ ");
-        if (slash >= 0) dim = dim.substring(slash + 2).replace("]", "").trim();
+        String dim = Extras.dimension(mc);
         long x = Math.round(mc.player.getX()), y = Math.round(mc.player.getY()), z = Math.round(mc.player.getZ());
-        l.add(new String[]{n, "" + x, "" + y, "" + z, dim});
+        l.add(new String[]{n, "" + x, "" + y, "" + z, dim, "" + (l.size() % Extras.WP_COL.length), "1"});
         try {
             List<String> lines = new ArrayList<>();
             for (String[] w : l) lines.add(String.join("\t", w));
             Files.write(waypointPath(), lines);
+            Extras.wpAt = 0;
         } catch (Exception e) {
             return "Could not save the waypoint: " + e.getMessage();
         }
@@ -498,7 +509,7 @@ public class ToggleScreen extends Screen {
         fields.clear();
         search = null;
         aimBtn = null;
-        tokenBox = chanBox = userBox = chatBox = chatChanBox = null;
+        tokenBox = chanBox = userBox = chatBox = chatChanBox = wpNameBox = scriptBox = scriptNameBox = skinHexBox = null;
         searchActive = false;
         pw = Math.min(width - 24, 560);
         ph = Math.min(height - 16, 340);
@@ -577,12 +588,17 @@ public class ToggleScreen extends Screen {
             case T_WAYPOINTS -> initWaypoints();
             case T_DISCORD -> initDiscordTab();
             case T_PLAYERS -> initPlayers();
+            case T_COMBO -> initCombo();
+            case T_SKIN -> initSkin();
             case T_VOICE -> initVoice();
             case T_TRAIN -> initTrain();
             case T_SETTINGS -> initSettings();
             default -> { }
         }
     }
+
+    private EditBox wpNameBox, scriptBox, scriptNameBox, skinHexBox;
+    private String wpName = "", scriptText = "", scriptName = "";
 
     // ---- trims tab layout ----
     private int trimLeftW() { return Math.max(130, Math.min(210, cw * 2 / 5)); }
@@ -710,7 +726,8 @@ public class ToggleScreen extends Screen {
 
     private void initDiscord() {
         int lw = discLeftW(), fx0 = cx + 12, fw = lw - 24;
-        tokenBox = makeBox(fx0, top + 43, fw, DiscordBot.token, s -> DiscordBot.token = s.trim(), true);
+        tokenBox = makeBox(fx0, top + 43, fw, DiscordBot.token, s -> { if (!DiscordBot.lockToken) DiscordBot.token = s.trim(); }, true);
+        tokenBox.setEditable(!DiscordBot.lockToken);
         chanBox = makeBox(fx0, top + 73, fw, DiscordBot.channelId, s -> DiscordBot.channelId = s.trim(), false);
         userBox = makeBox(fx0, top + 103, fw, DiscordBot.userId, s -> DiscordBot.userId = s.trim(), false);
         hit("opt5", cx + 6, top + 123, lw - 12, 16, () -> DiscordBot.listen = !DiscordBot.listen);
@@ -725,7 +742,7 @@ public class ToggleScreen extends Screen {
     }
 
     // ---- discord tab: Bot / Chat pages ----
-    private static final String[] DISC_PAGES = {"Bot", "Chat"};
+    private static final String[] DISC_PAGES = {"Bot", "Chat", "Scripts"};
 
     private void initDiscordTab() {
         int chipX = cx + 8;
@@ -736,7 +753,7 @@ public class ToggleScreen extends Screen {
             chipX += w + 4;
         }
         top += 22;
-        try { if (discPage == 0) initDiscord(); else initChat(); } finally { top -= 22; }
+        try { if (discPage == 0) initDiscord(); else if (discPage == 1) initChat(); else initScripts(); } finally { top -= 22; }
     }
 
     private void drawDiscordTab(GuiGraphics g, int mx, int my) {
@@ -749,7 +766,7 @@ public class ToggleScreen extends Screen {
             chipX += w + 4;
         }
         top += 22;
-        try { if (discPage == 0) drawDiscord(g, mx, my); else drawChat(g, mx, my); } finally { top -= 22; }
+        try { if (discPage == 0) drawDiscord(g, mx, my); else if (discPage == 1) drawChat(g, mx, my); else drawScripts(g, mx, my); } finally { top -= 22; }
     }
 
     // ---- voice chat tab (needs the Simple Voice Chat mod to tell who has it) ----
@@ -836,31 +853,202 @@ public class ToggleScreen extends Screen {
         }
     }
 
-    // ---- gear tab ----
-    private String gear(ItemStack st) {
-        if (st.isEmpty()) return "-";
-        String n = st.getHoverName().getString();
-        if (st.isDamageableItem() && st.getMaxDamage() > 0) n += "  " + (100 * (st.getMaxDamage() - st.getDamageValue()) / st.getMaxDamage()) + "%";
-        return n;
+    // ---- combo tab ----
+    private void initCombo() {
+        hit("opt19", cx + 6, top + 22, cw - 12, 16, () -> { Extras.comboHud = !Extras.comboHud; savePrefs(); });
     }
 
-    private void drawGear(GuiGraphics g) {
-        Minecraft mc = Minecraft.getInstance();
+    private void drawCombo(GuiGraphics g, int mx, int my) {
         card(g, cx, top, cw, bottom - top);
-        bold(g, "My gear", cx + 10, top + 8, TEXT);
-        if (mc.player == null) { text(g, "Join a world to see your gear", cx + 12, top + 26, muted()); return; }
-        var p = mc.player;
-        text(g, "Armor " + p.getArmorValue(), cx + cw - 12 - font.width("Armor " + p.getArmorValue()), top + 8, muted());
-        String[] names = {"Main hand", "Off hand", "Helmet", "Chestplate", "Leggings", "Boots"};
-        ItemStack[] items = {p.getMainHandItem(), p.getOffhandItem(), p.getItemBySlot(EquipmentSlot.HEAD), p.getItemBySlot(EquipmentSlot.CHEST),
-                p.getItemBySlot(EquipmentSlot.LEGS), p.getItemBySlot(EquipmentSlot.FEET)};
-        for (int i = 0; i < items.length; i++) {
-            int ry = top + 28 + i * 16;
-            if (ry > bottom - 14) break;
-            round(g, cx + 8, ry - 2, cw - 16, 14, alpha(cAccent, 0.06f));
-            text(g, names[i], cx + 14, ry + 1, muted());
-            String v = fit(gear(items[i]), cw - 140);
-            text(g, v, cx + cw - 14 - font.width(v), ry + 1, TEXT);
+        bold(g, "Combo tracker", cx + 10, top + 6, TEXT);
+        optionRow(g, 19, cx + 6, top + 22, cw - 12, "Show combo on screen", null, Extras.comboHud);
+        String[] labels = {"Combo", "Best", "Hits", "Taken"};
+        int[] vals = {Extras.combo, Extras.bestCombo, Extras.hits, Extras.taken};
+        int tw = (cw - 12 - 18) / 4;
+        for (int i = 0; i < 4; i++) {
+            int tx = cx + 6 + i * (tw + 6), ty = top + 44;
+            round(g, tx, ty, tw, 34, alpha(cAccent, 0.08f));
+            text(g, labels[i], tx + 8, ty + 6, muted());
+            bold(g, "" + vals[i], tx + 8, ty + 19, i == 0 && vals[i] > 0 ? cAccent2 : TEXT);
+        }
+        int total = Extras.hits + Extras.taken;
+        String ratio = total == 0 ? "-" : Math.round(100f * Extras.hits / total) + "% of fights landed";
+        text(g, fit("Last target: " + (Extras.lastTarget.isEmpty() ? "-" : Extras.lastTarget) + "   " + ratio, cw - 24), cx + 12, top + 86, muted());
+        text(g, "A combo is hits in a row with under 2 s between them and no damage taken", cx + 12, top + 98, muted());
+        bold(g, "Recent combos", cx + 12, top + 114, TEXT);
+        int y = top + 128, n = 0;
+        for (int c : Extras.history) {
+            if (y > bottom - 12) break;
+            text(g, "x" + c, cx + 14, y, c >= 5 ? cAccent2 : TEXT);
+            int bw = Math.min(cw - 80, c * 8);
+            round(g, cx + 44, y + 1, Math.max(4, bw), 6, alpha(cAccent, 0.5f));
+            y += 11;
+            n++;
+        }
+        if (n == 0) text(g, "Nothing yet. Hit something twice in a row", cx + 14, y, muted());
+    }
+
+    // ---- skin editor tab ----
+    private static BufferedImage skinImg;
+    private static volatile BufferedImage skinLoaded;
+    private static volatile boolean skinLoading = false;
+    private static final Deque<BufferedImage> skinUndo = new ArrayDeque<>();
+    private static int skinColor = 0xFFE0564F;
+    private static final int[] SKIN_PAL = {0xFF000000, 0xFF4A4A4A, 0xFF9A9A9A, 0xFFFFFFFF, 0xFFE0564F, 0xFFF2762B, 0xFFF0B429, 0xFFFFE066,
+            0xFF58D26F, 0xFF1BC9B0, 0xFF4FB3E8, 0xFF6C8CFF, 0xFF9B5CFF, 0xFFFF8FB8, 0xFF8B5A2B, 0xFFE8B98A};
+    private int skinTool = 0;
+    private String skinHex = "E0564F";
+    private final int[] skinBox = new int[4];
+    private int skinScale = 2;
+
+    private static Path skinPath() { return FabricLoader.getInstance().getConfigDir().resolve("trim-studio-skin.png"); }
+
+    private static BufferedImage copyOfSkin(BufferedImage src) {
+        BufferedImage o = new BufferedImage(64, 64, BufferedImage.TYPE_INT_ARGB);
+        if (src != null) for (int y = 0; y < Math.min(64, src.getHeight()); y++) for (int x = 0; x < Math.min(64, src.getWidth()); x++) o.setRGB(x, y, src.getRGB(x, y));
+        return o;
+    }
+
+    private static void ensureSkin() {
+        if (skinImg != null) return;
+        try {
+            if (Files.exists(skinPath())) { BufferedImage i = ImageIO.read(skinPath().toFile()); if (i != null) { skinImg = copyOfSkin(i); return; } }
+        } catch (Exception ignored) { }
+        skinImg = new BufferedImage(64, 64, BufferedImage.TYPE_INT_ARGB);
+    }
+
+    private static void pushUndo() {
+        skinUndo.addLast(copyOfSkin(skinImg));
+        while (skinUndo.size() > 30) skinUndo.removeFirst();
+    }
+
+    private void loadMySkin() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null) { status = Component.literal("Join a world to load your skin"); return; }
+        String hash = ChatBridge.hashFromProfile(mc.player.getGameProfile());
+        if (hash == null) { status = Component.literal("No custom skin found for this account (default skin)"); return; }
+        if (skinLoading) return;
+        skinLoading = true;
+        status = Component.literal("Loading your skin...");
+        final String h = hash.toLowerCase(Locale.ROOT);
+        Thread t = new Thread(() -> {
+            try {
+                BufferedImage i = ChatBridge.skinImage(h);
+                if (i != null) skinLoaded = copyOfSkin(i);
+            } finally {
+                skinLoading = false;
+            }
+        }, "trimstudio-skin");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private void saveSkin() {
+        ensureSkin();
+        try {
+            ImageIO.write(skinImg, "png", skinPath().toFile());
+            status = Component.literal("Saved skin PNG. Use !skin in Discord to get it, or upload it on minecraft.net");
+        } catch (Exception e) {
+            status = Component.literal("Could not save the skin: " + e.getMessage());
+        }
+    }
+
+    private void initSkin() {
+        ensureSkin();
+        int lw = skinCardW(), rx = cx + lw + 8, rw = cw - lw - 8;
+        int sw = Math.max(8, Math.min(16, (rw - 20) / 8));
+        for (int i = 0; i < SKIN_PAL.length; i++) {
+            final int c = SKIN_PAL[i];
+            hit("skpal" + i, rx + 10 + (i % 8) * (sw + 1), top + 24 + (i / 8) * (sw + 1), sw, sw, () -> {
+                skinColor = c;
+                skinHex = String.format("%06X", c & 0xFFFFFF);
+                skinTool = 0;
+                init();
+            });
+        }
+        skinHexBox = makeBox(rx + 10, top + 74, rw - 20, skinHex, s -> {
+            skinHex = s;
+            String h = s.trim().replace("#", "");
+            if (h.matches("[0-9a-fA-F]{6}")) skinColor = 0xFF000000 | Integer.parseInt(h, 16);
+        }, false);
+        skinHexBox.setMaxLength(7);
+        int cwid = (rw - 20 - 8) / 3;
+        hit("sktool0", rx + 10, top + 98, cwid, 16, () -> skinTool = 0);
+        hit("sktool1", rx + 14 + cwid, top + 98, cwid, 16, () -> skinTool = 1);
+        hit("sktool2", rx + 18 + 2 * cwid, top + 98, cwid, 16, () -> skinTool = 2);
+        hit("skload", rx + 10, top + 118, cwid, 16, this::loadMySkin);
+        hit("skundo", rx + 14 + cwid, top + 118, cwid, 16, () -> { if (!skinUndo.isEmpty()) skinImg = skinUndo.removeLast(); });
+        hit("skclear", rx + 18 + 2 * cwid, top + 118, cwid, 16, () -> { pushUndo(); skinImg = new BufferedImage(64, 64, BufferedImage.TYPE_INT_ARGB); });
+    }
+
+    private int skinCardW() {
+        skinScale = clampi(Math.min((cw - 190) / 64, (bottom - top - 28) / 64), 1, 4);
+        return 64 * skinScale + 16;
+    }
+
+    private void skinPaint(int mx, int my, boolean left, boolean right, boolean edge) {
+        if (skinImg == null) return;
+        if (mx < skinBox[0] || my < skinBox[1] || mx >= skinBox[0] + 64 * skinScale || my >= skinBox[1] + 64 * skinScale) return;
+        int px = (mx - skinBox[0]) / skinScale, py = (my - skinBox[1]) / skinScale;
+        if (edge) pushUndo();
+        if (right || (left && skinTool == 1)) skinImg.setRGB(px, py, 0);
+        else if (left && skinTool == 2) {
+            int c = skinImg.getRGB(px, py);
+            if ((c >>> 24) != 0) { skinColor = c | 0xFF000000; skinHex = String.format("%06X", c & 0xFFFFFF); if (skinHexBox != null) skinHexBox.setValue(skinHex); }
+        } else if (left) skinImg.setRGB(px, py, skinColor | 0xFF000000);
+    }
+
+    private void drawSkin(GuiGraphics g, int mx, int my) {
+        ensureSkin();
+        BufferedImage fresh = skinLoaded;
+        if (fresh != null) { skinLoaded = null; pushUndo(); skinImg = fresh; status = Component.literal("Loaded your skin"); }
+        int lw = skinCardW(), rx = cx + lw + 8, rw = cw - lw - 8;
+        card(g, cx, top, lw, bottom - top);
+        skinBox[0] = cx + 8; skinBox[1] = top + 8; skinBox[2] = 64 * skinScale; skinBox[3] = 64 * skinScale;
+        g.fill(skinBox[0], skinBox[1], skinBox[0] + skinBox[2], skinBox[1] + skinBox[3], 0xFF22252B);
+        for (int y = 0; y < 64; y++) {
+            for (int x = 0; x < 64; x++) {
+                int c = skinImg.getRGB(x, y);
+                if ((c >>> 24) == 0) continue;
+                g.fill(skinBox[0] + x * skinScale, skinBox[1] + y * skinScale, skinBox[0] + (x + 1) * skinScale, skinBox[1] + (y + 1) * skinScale, c | 0xFF000000);
+            }
+        }
+        if (mx >= skinBox[0] && my >= skinBox[1] && mx < skinBox[0] + skinBox[2] && my < skinBox[1] + skinBox[3]) {
+            int px = (mx - skinBox[0]) / skinScale, py = (my - skinBox[1]) / skinScale;
+            int hx = skinBox[0] + px * skinScale, hy = skinBox[1] + py * skinScale;
+            g.fill(hx, hy, hx + skinScale, hy + 1, 0xFFFFFFFF); g.fill(hx, hy + skinScale - 1, hx + skinScale, hy + skinScale, 0xFFFFFFFF);
+            g.fill(hx, hy, hx + 1, hy + skinScale, 0xFFFFFFFF); g.fill(hx + skinScale - 1, hy, hx + skinScale, hy + skinScale, 0xFFFFFFFF);
+            text(g, px + ", " + py, cx + 8, bottom - 14, muted());
+        }
+        if (skinLoading) text(g, "Loading...", cx + lw - 8 - font.width("Loading..."), bottom - 14, AMBER);
+
+        card(g, rx, top, rw, bottom - top);
+        bold(g, "Palette", rx + 10, top + 8, TEXT);
+        int sw = Math.max(8, Math.min(16, (rw - 20) / 8));
+        for (int i = 0; i < SKIN_PAL.length; i++) {
+            int sx = rx + 10 + (i % 8) * (sw + 1), sy = top + 24 + (i / 8) * (sw + 1);
+            if (SKIN_PAL[i] == skinColor) g.fill(sx - 1, sy - 1, sx + sw + 1, sy + sw + 1, 0xFFFFFFFF);
+            g.fill(sx, sy, sx + sw, sy + sw, SKIN_PAL[i]);
+        }
+        if (skinHexBox != null) field(g, skinHexBox, rx + 10, top + 74, rw - 20, "Hex colour", mx, my);
+        g.fill(rx + rw - 28, top + 62, rx + rw - 10, top + 72, skinColor | 0xFF000000);
+        int cwid = (rw - 20 - 8) / 3;
+        chip(g, "sktool0", new int[]{rx + 10, top + 98, cwid, 16}, "Pencil", skinTool == 0 ? 1 : 0, cAccent);
+        chip(g, "sktool1", new int[]{rx + 14 + cwid, top + 98, cwid, 16}, "Eraser", skinTool == 1 ? 1 : 0, cAccent);
+        chip(g, "sktool2", new int[]{rx + 18 + 2 * cwid, top + 98, cwid, 16}, "Picker", skinTool == 2 ? 1 : 0, cAccent);
+        chip(g, "skload", new int[]{rx + 10, top + 118, cwid, 16}, "Load mine", 0, cAccent2);
+        chip(g, "skundo", new int[]{rx + 14 + cwid, top + 118, cwid, 16}, "Undo", 0, cAccent2);
+        chip(g, "skclear", new int[]{rx + 18 + 2 * cwid, top + 118, cwid, 16}, "Clear", 0, RED);
+        text(g, fit("Right click erases. Hold to draw", rw - 20), rx + 10, top + 140, muted());
+        int fy = top + 154;
+        if (fy + 32 <= bottom - 4) {
+            for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) {
+                int base = skinImg.getRGB(8 + x, 8 + y), hat = skinImg.getRGB(40 + x, 8 + y);
+                int c = (hat >>> 24) > 0 ? hat : base;
+                if ((c >>> 24) == 0) continue;
+                g.fill(rx + 10 + x * 4, fy + y * 4, rx + 10 + x * 4 + 4, fy + y * 4 + 4, c | 0xFF000000);
+            }
+            text(g, "Face preview", rx + 50, fy + 12, muted());
         }
     }
 
@@ -872,28 +1060,61 @@ public class ToggleScreen extends Screen {
 
     private static void saveWaypoints(List<String[]> l) throws Exception {
         List<String> lines = new ArrayList<>();
-        for (String[] w : l) lines.add(String.join("\t", w));
+        for (String[] w : l) lines.add(String.join("\t", Extras.norm(w)));
         Files.write(waypointPath(), lines);
+        Extras.wpAt = 0;
+    }
+
+    private void saveWps(String ok) {
+        try { saveWaypoints(wps); if (ok != null) status = Component.literal(ok); }
+        catch (Exception e) { status = Component.literal("Could not save: " + e.getMessage()); }
     }
 
     private void initWaypoints() {
         wps = loadWaypoints();
         int rows = wpRows(), pages = Math.max(1, (wps.size() + rows - 1) / rows);
         wpPage = clampi(wpPage, 0, pages - 1);
-        hit("wpmark", cx + 6, top, 104, 16, this::markWaypoint);
+        wpNameBox = makeBox(cx + 6, top - 1, 110, wpName, s -> wpName = s, false);
+        wpNameBox.setMaxLength(32);
+        wpNameBox.setHint(Component.literal("Name (optional)").withStyle(ChatFormatting.DARK_GRAY));
+        hit("wpmark", cx + 120, top, 70, 16, this::markWaypoint);
+        hit("wphud", cx + 194, top, 54, 16, () -> { Extras.wpHud = !Extras.wpHud; savePrefs(); });
+        hit("wpdeath", cx + 252, top, 62, 16, () -> { Extras.wpDeath = !Extras.wpDeath; savePrefs(); });
         hit("wpprev", cx + cw - 44, top, 18, 16, () -> { wpPage = (wpPage + pages - 1) % pages; init(); });
         hit("wpnext", cx + cw - 24, top, 18, 16, () -> { wpPage = (wpPage + 1) % pages; init(); });
         for (int i = 0; i < rows; i++) {
             final int idx = wpPage * rows + i;
             if (idx >= wps.size()) break;
-            hit("wprow" + i, cx + 6, top + 22 + i * 22, cw - 12 - 24, 20, () -> copyWaypoint(idx));
-            hit("wpdel" + i, cx + cw - 6 - 22, top + 22 + i * 22, 22, 20, () -> deleteWaypoint(idx));
+            int ry = top + 22 + i * 22;
+            hit("wpcol" + i, cx + 10, ry + 2, 18, 16, () -> cycleWpColor(idx));
+            hit("wpvis" + i, cx + cw - 76, ry, 22, 20, () -> toggleWp(idx));
+            hit("wpcopy" + i, cx + cw - 52, ry, 22, 20, () -> copyWaypoint(idx));
+            hit("wpdel" + i, cx + cw - 28, ry, 22, 20, () -> deleteWaypoint(idx));
         }
     }
 
     private void markWaypoint() {
-        status = Component.literal(markHere("").replace("*", ""));
+        status = Component.literal(markHere(wpName).replace("*", ""));
+        wpName = "";
         init();
+    }
+
+    private void cycleWpColor(int idx) {
+        if (idx < 0 || idx >= wps.size()) return;
+        String[] w = Extras.norm(wps.get(idx));
+        int c = 0;
+        try { c = Integer.parseInt(w[5].trim()); } catch (Exception ignored) { }
+        w[5] = "" + ((Math.abs(c) + 1) % Extras.WP_COL.length);
+        wps.set(idx, w);
+        saveWps(null);
+    }
+
+    private void toggleWp(int idx) {
+        if (idx < 0 || idx >= wps.size()) return;
+        String[] w = Extras.norm(wps.get(idx));
+        w[6] = Extras.visible(w) ? "0" : "1";
+        wps.set(idx, w);
+        saveWps(w[0] + (w[6].equals("1") ? " shown on screen" : " hidden"));
     }
 
     private void copyWaypoint(int idx) {
@@ -906,37 +1127,51 @@ public class ToggleScreen extends Screen {
     private void deleteWaypoint(int idx) {
         if (idx < 0 || idx >= wps.size()) return;
         wps.remove(idx);
-        try { saveWaypoints(wps); status = Component.literal("Removed waypoint"); }
-        catch (Exception e) { status = Component.literal("Could not save: " + e.getMessage()); }
+        saveWps("Removed waypoint");
         init();
     }
 
-    private void drawWaypoints(GuiGraphics g) {
-        chip(g, "wpmark", new int[]{cx + 6, top, 104, 16}, "Mark here", 0, cAccent);
+    private void drawWaypoints(GuiGraphics g, int mx, int my) {
+        Minecraft mc = Minecraft.getInstance();
+        if (wpNameBox != null) field(g, wpNameBox, cx + 6, top - 1, 110, "", mx, my);
+        chip(g, "wpmark", new int[]{cx + 120, top, 70, 16}, "Mark here", 0, cAccent);
+        chip(g, "wphud", new int[]{cx + 194, top, 54, 16}, Extras.wpHud ? "HUD on" : "HUD off", Extras.wpHud ? 1 : 0, cAccent2);
+        chip(g, "wpdeath", new int[]{cx + 252, top, 62, 16}, "Death pt", Extras.wpDeath ? 1 : 0, cAccent2);
         int rows = wpRows(), pages = Math.max(1, (wps.size() + rows - 1) / rows);
-        text(g, wps.size() + " saved", cx + 118, top + 4, muted());
         chip(g, "wpprev", new int[]{cx + cw - 44, top, 18, 16}, "<", 0, cAccent);
         chip(g, "wpnext", new int[]{cx + cw - 24, top, 18, 16}, ">", 0, cAccent);
-        String pg = (wpPage + 1) + "/" + pages;
+        String pg = wps.size() + " saved  " + (wpPage + 1) + "/" + pages;
         text(g, pg, cx + cw - 50 - font.width(pg), top + 4, muted());
         card(g, cx, top + 20, cw, bottom - top - 20);
         if (wps.isEmpty()) {
             text(g, fit("No waypoints yet. Press Mark here in a world (or !mark <name> in Discord).", cw - 24), cx + 12, top + 32, muted());
             return;
         }
+        String curDim = mc.level != null ? Extras.dimension(mc) : "";
         for (int i = 0; i < rows; i++) {
             int idx = wpPage * rows + i;
             if (idx >= wps.size()) break;
-            String[] w = wps.get(idx);
+            String[] w = Extras.norm(wps.get(idx));
             int ry = top + 22 + i * 22;
-            float hv = ease("wprowhov" + i, hov("wprow" + i) ? 1 : 0, 14);
-            if (hv > 0.02f) round(g, cx + 6, ry, cw - 12, 20, alpha(cAccent, 0.12f * hv));
-            bold(g, fit(w[0], cw - 220), cx + 14, ry + 6, TEXT);
-            String c = w[1] + " " + w[2] + " " + w[3] + "  " + w[4].replace("minecraft:", "");
-            text(g, fit(c, 190), cx + cw - 34 - Math.min(190, font.width(c)), ry + 6, muted());
-            boolean dh = hov("wpdel" + i);
-            round(g, cx + cw - 6 - 22, ry, 22, 20, dh ? RED : alpha(RED, 0.25f));
-            text(g, "x", cx + cw - 6 - 14, ry + 6, TEXT);
+            round(g, cx + 6, ry, cw - 12, 20, alpha(cAccent, 0.06f));
+            round(g, cx + 12, ry + 4, 14, 12, Extras.color(w));
+            boolean vis = Extras.visible(w);
+            bold(g, fit(w[0], cw - 270), cx + 32, ry + 6, vis ? TEXT : muted());
+            String dist = "";
+            if (mc.player != null && w[4].equals(curDim)) {
+                try {
+                    double dx = Double.parseDouble(w[1]) - mc.player.getX(), dz = Double.parseDouble(w[3]) - mc.player.getZ();
+                    dist = "  " + Math.round(Math.sqrt(dx * dx + dz * dz)) + "m";
+                } catch (Exception ignored) { }
+            }
+            String c = w[1] + " " + w[2] + " " + w[3] + "  " + w[4].replace("minecraft:", "") + dist;
+            text(g, fit(c, 220), cx + cw - 84 - Math.min(220, font.width(c)), ry + 6, muted());
+            round(g, cx + cw - 76, ry, 22, 20, hov("wpvis" + i) ? GREEN : alpha(vis ? GREEN : 0xFF888888, 0.35f));
+            text(g, vis ? "on" : "off", cx + cw - 76 + (22 - font.width(vis ? "on" : "off")) / 2, ry + 6, TEXT);
+            round(g, cx + cw - 52, ry, 22, 20, hov("wpcopy" + i) ? cAccent : alpha(cAccent, 0.3f));
+            text(g, "c", cx + cw - 52 + 8, ry + 6, TEXT);
+            round(g, cx + cw - 28, ry, 22, 20, hov("wpdel" + i) ? RED : alpha(RED, 0.25f));
+            text(g, "x", cx + cw - 28 + 8, ry + 6, TEXT);
         }
     }
 
@@ -1177,6 +1412,70 @@ public class ToggleScreen extends Screen {
         if (chatBox != null) { building = true; chatBox.setValue(""); building = false; }
     }
 
+    // ---- discord scripts page ----
+    private void initScripts() {
+        int lw = discLeftW(), fx0 = cx + 12, fw = lw - 24;
+        hit("opt16", cx + 6, top + 24, lw - 12, 16, () -> DiscordBot.scriptsOn = !DiscordBot.scriptsOn);
+        hit("opt17", cx + 6, top + 42, lw - 12, 16, () -> { DiscordBot.lockToken = !DiscordBot.lockToken; savePrefs(); });
+        hit("opt18", cx + 6, top + 60, lw - 12, 16, () -> DiscordBot.autoConnect = !DiscordBot.autoConnect);
+        scriptBox = makeBox(fx0, top + 98, fw, scriptText, s -> scriptText = s, false);
+        scriptBox.setMaxLength(400);
+        scriptNameBox = makeBox(fx0, top + 136, fw, scriptName, s -> scriptName = s, false);
+        int bw = (fw - 8) / 3, by = top + 162;
+        hit("srun", fx0, by, bw, 18, () -> status = Component.literal(Scripts.run(scriptText).replace("`", "")));
+        hit("sstop", fx0 + bw + 4, by, bw, 18, () -> status = Component.literal(Scripts.stop()));
+        hit("ssave", fx0 + 2 * (bw + 4), by, bw, 18, () -> { status = Component.literal(Scripts.save(scriptName, scriptText).replace("`", "")); init(); });
+        int rx = cx + lw + 8, rw = cw - lw - 8;
+        List<String> names = Scripts.names();
+        int n = Math.min(names.size(), Math.max(1, (bottom - top - 100) / 12));
+        for (int i = 0; i < n; i++) {
+            final String nm = names.get(i);
+            hit("srow" + i, rx + 4, top + 22 + i * 12, rw - 8, 12, () -> {
+                scriptName = nm;
+                scriptText = Scripts.get(nm) == null ? "" : Scripts.get(nm);
+                init();
+            });
+        }
+    }
+
+    private void drawScripts(GuiGraphics g, int mx, int my) {
+        int lw = discLeftW(), fx0 = cx + 12, fw = lw - 24;
+        card(g, cx, top, lw, bottom - top);
+        bold(g, "Scripts from Discord", cx + 10, top + 8, TEXT);
+        optionRow(g, 16, cx + 6, top + 24, lw - 12, "Allow scripts", null, DiscordBot.scriptsOn);
+        optionRow(g, 17, cx + 6, top + 42, lw - 12, "Lock bot token", null, DiscordBot.lockToken);
+        optionRow(g, 18, cx + 6, top + 60, lw - 12, "Auto connect on join", null, DiscordBot.autoConnect);
+        if (scriptBox != null) field(g, scriptBox, fx0, top + 98, fw, "Steps (separate with ;)", mx, my);
+        if (scriptNameBox != null) field(g, scriptNameBox, fx0, top + 136, fw, "Name (to save)", mx, my);
+        int bw = (fw - 8) / 3, by = top + 162;
+        chip(g, "srun", new int[]{fx0, by, bw, 18}, "Run", 0, cAccent);
+        chip(g, "sstop", new int[]{fx0 + bw + 4, by, bw, 18}, "Stop", 0, RED);
+        chip(g, "ssave", new int[]{fx0 + 2 * (bw + 4), by, bw, 18}, "Save", 0, cAccent2);
+        boolean idSet = !DiscordBot.userId.isBlank();
+        text(g, fit(idSet ? "Obeys Discord user " + DiscordBot.userId : "Set your user ID on the Bot page first", lw - 20), cx + 10, top + 186,
+                idSet ? GREEN : AMBER);
+        text(g, fit(Scripts.isActive() ? "A script is running" : "No script running", lw - 20), cx + 10, top + 198, Scripts.isActive() ? GREEN : muted());
+
+        int rx = cx + lw + 8, rw = cw - lw - 8, rh = bottom - top;
+        card(g, rx, top, rw, rh);
+        bold(g, "Saved scripts (click to edit)", rx + 10, top + 8, TEXT);
+        List<String> names = Scripts.names();
+        int n = Math.min(names.size(), Math.max(1, (rh - 100) / 12));
+        if (names.isEmpty()) text(g, "Nothing saved yet", rx + 10, top + 24, muted());
+        for (int i = 0; i < n; i++) {
+            float hv = ease("srowhov" + i, hov("srow" + i) ? 1 : 0, 14);
+            if (hv > 0.02f) round(g, rx + 4, top + 22 + i * 12, rw - 8, 12, alpha(cAccent, 0.12f * hv));
+            String t = names.get(i) + ": " + Scripts.get(names.get(i));
+            text(g, fit(t, rw - 20), rx + 10, top + 24 + i * 12, TEXT);
+        }
+        int hy = top + rh - 66;
+        text(g, "Discord: !run walk 3; jump", rx + 10, hy, muted());
+        text(g, "!script <name>  !scripts  !stop", rx + 10, hy + 11, muted());
+        text(g, fit("walk run back left right sneak use <sec>", rw - 20), rx + 10, hy + 22, muted());
+        text(g, fit("jump attack <n>  wait <sec>  look <yaw> <pitch>", rw - 20), rx + 10, hy + 33, muted());
+        text(g, fit("turn <deg>  repeat <n> ... end  stop", rw - 20), rx + 10, hy + 44, muted());
+    }
+
     // ---- settings pages ----
     private int layCardW() { return (cw - 12 - 4 * 6) / 5; }
 
@@ -1241,8 +1540,9 @@ public class ToggleScreen extends Screen {
             case T_TRIMS -> "Copy /give command";
             case T_WARDROBE -> "Save current set";
             case T_WAYPOINTS -> "Mark here";
-            case T_DISCORD -> discPage == 1 ? "Send chat log now" : (DiscordBot.isRunning() ? "Disconnect bot" : "Connect bot");
-            case T_GEAR -> "Refresh";
+            case T_DISCORD -> discPage == 2 ? (Scripts.isActive() ? "Stop script" : "Run script") : discPage == 1 ? "Send chat log now" : (DiscordBot.isRunning() ? "Disconnect bot" : "Connect bot");
+            case T_COMBO -> "Reset combo";
+            case T_SKIN -> "Save skin PNG";
             case T_PLAYERS -> "Refresh list";
             case T_STATS -> "Copy my position";
             case T_VOICE -> "Refresh list";
@@ -1257,10 +1557,12 @@ public class ToggleScreen extends Screen {
             case T_WARDROBE -> saveLoadout();
             case T_WAYPOINTS -> markWaypoint();
             case T_DISCORD -> {
-                if (discPage == 1) { ChatBridge.sendLogNow(); status = Component.literal("Sending the chat log..."); }
+                if (discPage == 2) { status = Component.literal(Scripts.isActive() ? Scripts.stop() : Scripts.run(scriptText).replace("`", "")); }
+                else if (discPage == 1) { ChatBridge.sendLogNow(); status = Component.literal("Sending the chat log..."); }
                 else if (DiscordBot.isRunning()) DiscordBot.stop(); else { savePrefs(); DiscordBot.start(); }
             }
-            case T_GEAR -> init();
+            case T_COMBO -> { Extras.resetCombo(); status = Component.literal("Combo stats reset"); }
+            case T_SKIN -> saveSkin();
             case T_PLAYERS -> init();
             case T_STATS -> copyPos();
             case T_VOICE -> init();
@@ -1314,6 +1616,8 @@ public class ToggleScreen extends Screen {
         if (tab == T_TRIMS) {
             if (edge && mx >= prevBox[0] && mx < prevBox[2] && my >= prevBox[1] && my < prevBox[3]) prevDrag = true;
             if (prevDrag) viewYaw = Math.max(-1.2f, Math.min(1.2f, viewYaw + (mx - prevMx) / 45f));
+        } else if (tab == T_SKIN) {
+            skinPaint(mx, my, left, right, edge);
         } else if (tab == T_SETTINGS && setChip == 3) {
             if (edge) {
                 for (int col = 0; col < 2; col++) {
@@ -1407,8 +1711,11 @@ public class ToggleScreen extends Screen {
                 g.fill(x + 1, y + 2, x + 13, y + 12, c); g.fill(x + 3, y + 12, x + 6, y + 14, c); g.fill(x + 8, y + 12, x + 11, y + 14, c);
                 g.fill(x + 3, y + 5, x + 5, y + 8, bgc); g.fill(x + 9, y + 5, x + 11, y + 8, bgc);
             }
-            case T_GEAR -> { // shield
-                g.fill(x + 2, y + 1, x + 12, y + 8, c); g.fill(x + 3, y + 8, x + 11, y + 11, c); g.fill(x + 5, y + 11, x + 9, y + 14, c);
+            case T_COMBO -> { // flame
+                g.fill(x + 5, y, x + 9, y + 3, c); g.fill(x + 3, y + 3, x + 11, y + 8, c); g.fill(x + 1, y + 8, x + 13, y + 14, c); g.fill(x + 5, y + 9, x + 9, y + 13, bgc);
+            }
+            case T_SKIN -> { // brush
+                g.fill(x + 8, y, x + 13, y + 5, c); g.fill(x + 5, y + 4, x + 11, y + 9, c); g.fill(x + 1, y + 8, x + 7, y + 14, c); g.fill(x + 3, y + 10, x + 5, y + 12, bgc);
             }
             case T_PLAYERS -> { // two heads
                 g.fill(x + 1, y + 1, x + 6, y + 6, c); g.fill(x, y + 8, x + 7, y + 14, c);
@@ -1488,9 +1795,10 @@ public class ToggleScreen extends Screen {
         try {
             switch (tab) {
                 case T_WARDROBE -> drawWardrobe(g);
-                case T_WAYPOINTS -> drawWaypoints(g);
+                case T_WAYPOINTS -> drawWaypoints(g, mx, my);
                 case T_DISCORD -> drawDiscordTab(g, mx, my);
-                case T_GEAR -> drawGear(g);
+                case T_COMBO -> drawCombo(g, mx, my);
+                case T_SKIN -> drawSkin(g, mx, my);
                 case T_PLAYERS -> drawPlayers(g, mx, my);
                 case T_STATS -> drawStats(g);
                 case T_VOICE -> drawVoice(g);
@@ -1790,7 +2098,7 @@ public class ToggleScreen extends Screen {
         boolean on = DiscordBot.isRunning();
         disc(g, cx + lw - 14, top + 11, 3, on ? GREEN : muted());
         text(g, fit(DiscordBot.status(), lw - 24), cx + 10, top + 19, on ? GREEN : muted());
-        if (tokenBox != null) field(g, tokenBox, fx0, top + 43, fw, "Bot token (kept on this PC)", mx, my);
+        if (tokenBox != null) field(g, tokenBox, fx0, top + 43, fw, DiscordBot.lockToken ? "Bot token (locked)" : "Bot token (kept on this PC)", mx, my);
         if (chanBox != null) field(g, chanBox, fx0, top + 73, fw, "Channel ID", mx, my);
         if (userBox != null) field(g, userBox, fx0, top + 103, fw, "Only obey this user ID (optional)", mx, my);
         optionRow(g, 5, cx + 6, top + 123, lw - 12, "Listen for !commands", null, DiscordBot.listen);
