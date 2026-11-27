@@ -1,7 +1,6 @@
 package dev.packtoggles;
 
 import com.mojang.authlib.GameProfile;
-import com.mojang.blaze3d.platform.NativeImage;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
@@ -15,9 +14,6 @@ import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.client.player.RemotePlayer;
-import net.minecraft.client.renderer.RenderPipelines;
-import net.minecraft.client.renderer.texture.DynamicTexture;
-import net.minecraft.client.renderer.texture.TextureManager;
 import net.minecraft.client.resources.DefaultPlayerSkin;
 import net.minecraft.core.Holder;
 import net.minecraft.core.HolderLookup;
@@ -38,28 +34,22 @@ import net.minecraft.world.item.equipment.trim.TrimMaterial;
 import net.minecraft.world.item.equipment.trim.TrimPattern;
 import org.lwjgl.glfw.GLFW;
 
-import javax.imageio.ImageIO;
-import java.awt.Color;
-import java.awt.image.BufferedImage;
-import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.function.Consumer;
-import java.util.stream.Stream;
 
 /**
- * Trim Studio: 3D armor-trim preview, saved loadouts (Wardrobe), waypoints, voice chat info, a Discord bot
- * and settings. Everything is drawn by hand in render(); vanilla Buttons are transparent click areas. Mouse dragging
+ * Trim Studio: 3D armor-trim preview, a Discord bot (slash commands, chat bridge, scripts, fun games), players,
+ * combo tracker, voice chat info, training and settings. Everything is drawn by hand in render(); vanilla Buttons are transparent click areas. Mouse dragging
  * (sliders, preview rotation) is polled each frame.
  */
 public class ToggleScreen extends Screen {
     private static final int TEXT = 0xFFF5E8DD, GREEN = 0xFF58D26F, RED = 0xFFE0564F, AMBER = 0xFFF0B429;
-    private static final String[] TABS = {"Trims", "Wardrobe", "Waypoints", "Discord", "Players", "Combo", "Skin", "Stats", "Voice Chat", "Training", "Settings"};
-    private static final int T_TRIMS = 0, T_WARDROBE = 1, T_WAYPOINTS = 2, T_DISCORD = 3, T_PLAYERS = 4, T_COMBO = 5, T_SKIN = 6, T_STATS = 7, T_VOICE = 8, T_TRAIN = 9, T_SETTINGS = 10;
+    private static final String[] TABS = {"Trims", "Discord", "Players", "Combo", "Voice Chat", "Training", "Settings"};
+    private static final int T_TRIMS = 0, T_DISCORD = 1, T_PLAYERS = 2, T_COMBO = 3, T_VOICE = 4, T_TRAIN = 5, T_SETTINGS = 6;
     private static final String[] INTENSITY = {"Low", "Medium", "High"};
     private static final String[] SET_CHIPS = {"Layout", "Theme", "Display", "Colors"};
     private static final String[] SPEED = {"Slow", "Normal", "Fast"};
@@ -75,14 +65,14 @@ public class ToggleScreen extends Screen {
             "Magnifying dock at the bottom", "Wheel menu, Tab to open"};
 
     // trims data
-    private static final String[] PATTERNS = {"Sentry", "Dune", "Coast", "Wild", "Ward", "Eye", "Vex", "Tide", "Snout",
+    static final String[] PATTERNS = {"Sentry", "Dune", "Coast", "Wild", "Ward", "Eye", "Vex", "Tide", "Snout",
             "Rib", "Spire", "Wayfinder", "Shaper", "Silence", "Raiser", "Host", "Flow", "Bolt"};
-    private static final String[] MATS = {"Quartz", "Iron", "Netherite", "Redstone", "Copper", "Gold",
+    static final String[] MATS = {"Quartz", "Iron", "Netherite", "Redstone", "Copper", "Gold",
             "Emerald", "Diamond", "Lapis", "Amethyst", "Resin"};
-    private static final int[] MAT_COL = {0xFFE3D4C4, 0xFFCECACA, 0xFF625859, 0xFF971607, 0xFFB4684D, 0xFFDEB12D,
+    static final int[] MAT_COL = {0xFFE3D4C4, 0xFFCECACA, 0xFF625859, 0xFF971607, 0xFFB4684D, 0xFFDEB12D,
             0xFF11A036, 0xFF6EECD2, 0xFF416E97, 0xFF9A5CC6, 0xFFFC7812};
-    private static final String[] ARMOR_NAMES = {"Leather", "Chainmail", "Iron", "Gold", "Diamond", "Netherite"};
-    private static final String[] ARMOR_IDS = {"leather", "chainmail", "iron", "golden", "diamond", "netherite"};
+    static final String[] ARMOR_NAMES = {"Leather", "Chainmail", "Iron", "Gold", "Diamond", "Netherite"};
+    static final String[] ARMOR_IDS = {"leather", "chainmail", "iron", "golden", "diamond", "netherite"};
     private static final String[] PIECE_NAMES = {"Helmet", "Chest", "Legs", "Boots", "Showcase", "Random"};
     private static final EquipmentSlot[] SLOTS = {EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET};
 
@@ -96,7 +86,6 @@ public class ToggleScreen extends Screen {
     private static int customAccent = 0xFFF2762B, customAccent2 = 0xFFFFB347;
     private static float viewYaw = 0.35f;
     private static boolean equipDirty = true;
-    private static final List<String> wardrobe = new ArrayList<>();
     private static final boolean ESSENTIAL = FabricLoader.getInstance().isModLoaded("essential");
     private static boolean prefsLoaded = false;
 
@@ -104,7 +93,7 @@ public class ToggleScreen extends Screen {
     private final FX fx = new FX();
     private final Map<String, Float> eased = new HashMap<>();
     private final Map<String, Button> hits = new HashMap<>();
-    private int tab = 0, setChip = 0, wPage = 0;
+    private int tab = 0, setChip = 0;
     private float openT = 0, tabT = 1;
     private int tabDir = 1;
     private float selX = Float.NaN, selY = 0, selVX = 0, selVY = 0;
@@ -144,9 +133,6 @@ public class ToggleScreen extends Screen {
     // shared mouse state (colour sliders)
     private boolean wasPressed = false;
     private int sliderDrag = -1;
-
-    // wardrobe tab
-    private int wRows = 1;
 
     public ToggleScreen(Screen parent) {
         super(Component.translatable("screen.packtoggles.title"));
@@ -199,11 +185,8 @@ public class ToggleScreen extends Screen {
         DiscordBot.lockToken = getb(p, "dc.lock", false);
         DiscordBot.autoConnect = getb(p, "dc.auto", true);
         DiscordBot.scriptsOn = getb(p, "dc.scripts", true);
-        Extras.wpHud = getb(p, "wp.hud", true);
-        Extras.wpDeath = getb(p, "wp.death", true);
         Extras.comboHud = getb(p, "combo.hud", true);
-        wardrobe.clear();
-        for (String s : p.getProperty("wardrobe", "").split(";")) if (!s.isBlank() && entry(s) != null) wardrobe.add(s);
+        Fun.on = getb(p, "fun.on", true);
     }
 
     static void savePrefs() {
@@ -237,18 +220,26 @@ public class ToggleScreen extends Screen {
         p.setProperty("dc.lock", "" + DiscordBot.lockToken);
         p.setProperty("dc.auto", "" + DiscordBot.autoConnect);
         p.setProperty("dc.scripts", "" + DiscordBot.scriptsOn);
-        p.setProperty("wp.hud", "" + Extras.wpHud);
-        p.setProperty("wp.death", "" + Extras.wpDeath);
         p.setProperty("combo.hud", "" + Extras.comboHud);
-        p.setProperty("wardrobe", String.join(";", wardrobe));
+        p.setProperty("fun.on", "" + Fun.on);
         try (OutputStream out = Files.newOutputStream(prefsPath())) { p.store(out, "Trim Studio settings (contains your Discord bot token, keep private)"); }
         catch (Exception e) { PackTogglesClient.LOG.warn("Could not save Trim Studio settings", e); }
     }
 
     // ---------------- shared logic (also used by the Discord bot) ----------------
-    static String giveCommand() {
-        return "/give @s " + ARMOR_IDS[armorType] + "_chestplate[trim={pattern:\"" + PATTERNS[pattern].toLowerCase(Locale.ROOT)
-                + "\",material:\"" + MATS[material].toLowerCase(Locale.ROOT) + "\"}]";
+    static String giveCommand() { return giveCommandFor(armorType, material, pattern); }
+
+    static String giveCommandFor(int armor, int mat, int pat) {
+        return "/give @s " + ARMOR_IDS[armor] + "_chestplate[trim={pattern:\"" + PATTERNS[pat].toLowerCase(Locale.ROOT)
+                + "\",material:\"" + MATS[mat].toLowerCase(Locale.ROOT) + "\"}]";
+    }
+
+    /** Puts a loadout into the Trims tab (used by the Fun page's "Wear it"). */
+    static void useLoadout(int armor, int mat, int pat) {
+        armorType = clampi(armor, 0, ARMOR_NAMES.length - 1);
+        material = clampi(mat, 0, MATS.length - 1);
+        pattern = clampi(pat, 0, PATTERNS.length - 1);
+        equipDirty = true;
     }
 
     static String loadoutText() {
@@ -271,7 +262,7 @@ public class ToggleScreen extends Screen {
             for (int i = 0; i < PATTERNS.length; i++) if (w.equals(PATTERNS[i].toLowerCase(Locale.ROOT))) p = i;
             for (int i = 0; i < MATS.length; i++) if (w.equals(MATS[i].toLowerCase(Locale.ROOT))) m = i;
         }
-        if (a < 0 && m < 0 && p < 0) return "Usage: `!set <armor> <pattern> <material>`, for example `!set diamond wild gold`";
+        if (a < 0 && m < 0 && p < 0) return "Usage: `/set armor:diamond pattern:wild material:gold`";
         if (a >= 0) armorType = a;
         if (m >= 0) material = m;
         if (p >= 0) pattern = p;
@@ -279,7 +270,7 @@ public class ToggleScreen extends Screen {
         return loadoutText();
     }
 
-    // ---- Discord !players / !waypoints / !mark ----
+    // ---- Discord /players ----
     /** Online players from the tab list. Call on the game thread. */
     static String playersText() {
         Minecraft mc = Minecraft.getInstance();
@@ -289,65 +280,6 @@ public class ToggleScreen extends Screen {
         names.sort(String.CASE_INSENSITIVE_ORDER);
         if (names.isEmpty()) return "No players online";
         return "**Players online (" + names.size() + "):** " + String.join(", ", names);
-    }
-
-    private static Path waypointPath() { return FabricLoader.getInstance().getConfigDir().resolve("trim-studio-waypoints.txt"); }
-
-    /** Each line: name TAB x TAB y TAB z TAB dimension. */
-    static List<String[]> loadWaypoints() {
-        List<String[]> out = new ArrayList<>();
-        try {
-            if (!Files.exists(waypointPath())) return out;
-            for (String line : Files.readAllLines(waypointPath())) {
-                String[] t = line.split("\t");
-                if (t.length >= 5) out.add(t);
-            }
-        } catch (Exception e) {
-            PackTogglesClient.LOG.warn("Could not read waypoints", e);
-        }
-        return out;
-    }
-
-    static String waypointsText() {
-        List<String[]> l = loadWaypoints();
-        if (l.isEmpty()) return "No waypoints yet. Use `!mark <name>` while in game.";
-        StringBuilder sb = new StringBuilder("**Waypoints (" + l.size() + "):**");
-        for (String[] w : l) sb.append("\n").append(w[0]).append(": ").append(w[1]).append(" ").append(w[2]).append(" ").append(w[3]).append(" (").append(w[4]).append(")");
-        return sb.toString();
-    }
-
-    /** Saves the player's current position as a waypoint. Call on the game thread. */
-    static String markHere(String name) {
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.player == null || mc.level == null) return "Join a world first";
-        List<String[]> l = loadWaypoints();
-        if (l.size() >= 100) return "Waypoint list is full (100)";
-        String n = name == null ? "" : name.replaceAll("[\\t\\r\\n]+", " ").trim();
-        if (n.length() > 32) n = n.substring(0, 32);
-        if (n.isEmpty()) n = "Waypoint " + (l.size() + 1);
-        String dim = Extras.dimension(mc);
-        long x = Math.round(mc.player.getX()), y = Math.round(mc.player.getY()), z = Math.round(mc.player.getZ());
-        l.add(new String[]{n, "" + x, "" + y, "" + z, dim, "" + (l.size() % Extras.WP_COL.length), "1"});
-        try {
-            List<String> lines = new ArrayList<>();
-            for (String[] w : l) lines.add(String.join("\t", w));
-            Files.write(waypointPath(), lines);
-            Extras.wpAt = 0;
-        } catch (Exception e) {
-            return "Could not save the waypoint: " + e.getMessage();
-        }
-        return "Marked **" + n + "** at " + x + " " + y + " " + z + " (" + dim + ")";
-    }
-
-    private static int[] entry(String s) {
-        try {
-            String[] t = s.split(",");
-            int[] e = {Integer.parseInt(t[0]), Integer.parseInt(t[1]), Integer.parseInt(t[2]), Integer.parseInt(t[3])};
-            if (e[0] < 0 || e[0] >= ARMOR_NAMES.length || e[1] < 0 || e[1] >= MATS.length || e[2] < 0 || e[2] >= PATTERNS.length) return null;
-            return e;
-        } catch (Exception ex) {
-            return null;
-        }
     }
 
     // ---------------- helpers ----------------
@@ -509,7 +441,7 @@ public class ToggleScreen extends Screen {
         fields.clear();
         search = null;
         aimBtn = null;
-        tokenBox = chanBox = userBox = chatBox = chatChanBox = wpNameBox = scriptBox = scriptNameBox = skinHexBox = null;
+        tokenBox = chanBox = userBox = chatBox = chatChanBox = scriptBox = scriptNameBox = null;
         searchActive = false;
         pw = Math.min(width - 24, 560);
         ph = Math.min(height - 16, 340);
@@ -584,12 +516,9 @@ public class ToggleScreen extends Screen {
         if (layout == L_RADIAL && radialOpen) return;
         switch (tab) {
             case T_TRIMS -> initTrims();
-            case T_WARDROBE -> initWardrobe();
-            case T_WAYPOINTS -> initWaypoints();
             case T_DISCORD -> initDiscordTab();
             case T_PLAYERS -> initPlayers();
             case T_COMBO -> initCombo();
-            case T_SKIN -> initSkin();
             case T_VOICE -> initVoice();
             case T_TRAIN -> initTrain();
             case T_SETTINGS -> initSettings();
@@ -597,8 +526,8 @@ public class ToggleScreen extends Screen {
         }
     }
 
-    private EditBox wpNameBox, scriptBox, scriptNameBox, skinHexBox;
-    private String wpName = "", scriptText = "", scriptName = "";
+    private EditBox scriptBox, scriptNameBox;
+    private String scriptText = "", scriptName = "";
 
     // ---- trims tab layout ----
     private int trimLeftW() { return Math.max(130, Math.min(210, cw * 2 / 5)); }
@@ -663,50 +592,6 @@ public class ToggleScreen extends Screen {
         }
     }
 
-    // ---- wardrobe tab layout ----
-    private void initWardrobe() {
-        wRows = Math.max(1, (bottom - top - 28) / 22);
-        int pages = Math.max(1, (wardrobe.size() + wRows - 1) / wRows);
-        wPage = Math.min(wPage, pages - 1);
-        hit("wsave", cx + 6, top, 104, 16, this::saveLoadout);
-        hit("wprev", cx + cw - 44, top, 18, 16, () -> { wPage = (wPage + pages - 1) % pages; restartEntrance(-1); init(); });
-        hit("wnext", cx + cw - 24, top, 18, 16, () -> { wPage = (wPage + 1) % pages; restartEntrance(1); init(); });
-        for (int i = 0; i < wRows; i++) {
-            final int idx = wPage * wRows + i;
-            if (idx >= wardrobe.size()) break;
-            hit("wrow" + i, cx + 6, top + 22 + i * 22, cw - 12 - 24, 20, () -> loadLoadout(idx));
-            hit("wdel" + i, cx + cw - 6 - 22, top + 22 + i * 22, 22, 20, () -> deleteLoadout(idx));
-        }
-    }
-
-    private void saveLoadout() {
-        if (wardrobe.size() >= 60) { status = Component.literal("Wardrobe is full (60 saved)"); return; }
-        int mask = 0;
-        for (int i = 0; i < 4; i++) if (pieceOn[i]) mask |= 1 << i;
-        wardrobe.add(armorType + "," + material + "," + pattern + "," + mask);
-        savePrefs();
-        status = Component.literal("Saved " + ARMOR_NAMES[armorType] + " " + PATTERNS[pattern] + " " + MATS[material]);
-        init();
-    }
-
-    private void loadLoadout(int idx) {
-        if (idx < 0 || idx >= wardrobe.size()) return;
-        int[] e = entry(wardrobe.get(idx));
-        if (e == null) return;
-        armorType = e[0]; material = e[1]; pattern = e[2];
-        for (int i = 0; i < 4; i++) pieceOn[i] = (e[3] >> i & 1) != 0;
-        equipDirty = true;
-        status = Component.literal("Loaded " + ARMOR_NAMES[armorType] + ", " + PATTERNS[pattern] + ", " + MATS[material] + " (open Trims to see it)");
-    }
-
-    private void deleteLoadout(int idx) {
-        if (idx < 0 || idx >= wardrobe.size()) return;
-        wardrobe.remove(idx);
-        savePrefs();
-        status = Component.literal("Removed from wardrobe");
-        init();
-    }
-
     // ---- discord tab layout ----
     private int discLeftW() { return Math.max(190, Math.min(260, cw * 11 / 20)); }
 
@@ -731,6 +616,7 @@ public class ToggleScreen extends Screen {
         chanBox = makeBox(fx0, top + 73, fw, DiscordBot.channelId, s -> DiscordBot.channelId = s.trim(), false);
         userBox = makeBox(fx0, top + 103, fw, DiscordBot.userId, s -> DiscordBot.userId = s.trim(), false);
         hit("opt5", cx + 6, top + 123, lw - 12, 16, () -> DiscordBot.listen = !DiscordBot.listen);
+        hit("dinvite", fx0, top + 141, fw, 18, this::copyInvite);
         int bw = (lw - 24 - 4) / 2, by = top + 163;
         hit("dcon", fx0, by, bw, 18, () -> {
             if (DiscordBot.isRunning()) DiscordBot.stop(); else { savePrefs(); DiscordBot.start(); }
@@ -741,8 +627,8 @@ public class ToggleScreen extends Screen {
         hit("dchat", fx0 + fw - 48, top + 221, 48, 18, this::sendChat);
     }
 
-    // ---- discord tab: Bot / Chat pages ----
-    private static final String[] DISC_PAGES = {"Bot", "Chat", "Scripts"};
+    // ---- discord tab: Bot / Chat / Scripts / Fun pages ----
+    private static final String[] DISC_PAGES = {"Bot", "Chat", "Scripts", "Fun"};
 
     private void initDiscordTab() {
         int chipX = cx + 8;
@@ -753,7 +639,7 @@ public class ToggleScreen extends Screen {
             chipX += w + 4;
         }
         top += 22;
-        try { if (discPage == 0) initDiscord(); else if (discPage == 1) initChat(); else initScripts(); } finally { top -= 22; }
+        try { if (discPage == 0) initDiscord(); else if (discPage == 1) initChat(); else if (discPage == 2) initScripts(); else initFun(); } finally { top -= 22; }
     }
 
     private void drawDiscordTab(GuiGraphics g, int mx, int my) {
@@ -766,7 +652,7 @@ public class ToggleScreen extends Screen {
             chipX += w + 4;
         }
         top += 22;
-        try { if (discPage == 0) drawDiscord(g, mx, my); else if (discPage == 1) drawChat(g, mx, my); else drawScripts(g, mx, my); } finally { top -= 22; }
+        try { if (discPage == 0) drawDiscord(g, mx, my); else if (discPage == 1) drawChat(g, mx, my); else if (discPage == 2) drawScripts(g, mx, my); else drawFun(g); } finally { top -= 22; }
     }
 
     // ---- voice chat tab (needs the Simple Voice Chat mod to tell who has it) ----
@@ -886,293 +772,6 @@ public class ToggleScreen extends Screen {
             n++;
         }
         if (n == 0) text(g, "Nothing yet. Hit something twice in a row", cx + 14, y, muted());
-    }
-
-    // ---- skin editor tab ----
-    private static BufferedImage skinImg;
-    private static volatile BufferedImage skinLoaded;
-    private static volatile boolean skinLoading = false;
-    private static final Deque<BufferedImage> skinUndo = new ArrayDeque<>();
-    private static int skinColor = 0xFFE0564F;
-    private static final int[] SKIN_PAL = {0xFF000000, 0xFF4A4A4A, 0xFF9A9A9A, 0xFFFFFFFF, 0xFFE0564F, 0xFFF2762B, 0xFFF0B429, 0xFFFFE066,
-            0xFF58D26F, 0xFF1BC9B0, 0xFF4FB3E8, 0xFF6C8CFF, 0xFF9B5CFF, 0xFFFF8FB8, 0xFF8B5A2B, 0xFFE8B98A};
-    private int skinTool = 0;
-    private String skinHex = "E0564F";
-    private final int[] skinBox = new int[4];
-    private int skinScale = 2;
-
-    private static Path skinPath() { return FabricLoader.getInstance().getConfigDir().resolve("trim-studio-skin.png"); }
-
-    private static BufferedImage copyOfSkin(BufferedImage src) {
-        BufferedImage o = new BufferedImage(64, 64, BufferedImage.TYPE_INT_ARGB);
-        if (src != null) for (int y = 0; y < Math.min(64, src.getHeight()); y++) for (int x = 0; x < Math.min(64, src.getWidth()); x++) o.setRGB(x, y, src.getRGB(x, y));
-        return o;
-    }
-
-    private static void ensureSkin() {
-        if (skinImg != null) return;
-        try {
-            if (Files.exists(skinPath())) { BufferedImage i = ImageIO.read(skinPath().toFile()); if (i != null) { skinImg = copyOfSkin(i); return; } }
-        } catch (Exception ignored) { }
-        skinImg = new BufferedImage(64, 64, BufferedImage.TYPE_INT_ARGB);
-    }
-
-    private static void pushUndo() {
-        skinUndo.addLast(copyOfSkin(skinImg));
-        while (skinUndo.size() > 30) skinUndo.removeFirst();
-    }
-
-    private void loadMySkin() {
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.player == null) { status = Component.literal("Join a world to load your skin"); return; }
-        String hash = ChatBridge.hashFromProfile(mc.player.getGameProfile());
-        if (hash == null) { status = Component.literal("No custom skin found for this account (default skin)"); return; }
-        if (skinLoading) return;
-        skinLoading = true;
-        status = Component.literal("Loading your skin...");
-        final String h = hash.toLowerCase(Locale.ROOT);
-        Thread t = new Thread(() -> {
-            try {
-                BufferedImage i = ChatBridge.skinImage(h);
-                if (i != null) skinLoaded = copyOfSkin(i);
-            } finally {
-                skinLoading = false;
-            }
-        }, "trimstudio-skin");
-        t.setDaemon(true);
-        t.start();
-    }
-
-    private void saveSkin() {
-        ensureSkin();
-        try {
-            ImageIO.write(skinImg, "png", skinPath().toFile());
-            status = Component.literal("Saved skin PNG. Use !skin in Discord to get it, or upload it on minecraft.net");
-        } catch (Exception e) {
-            status = Component.literal("Could not save the skin: " + e.getMessage());
-        }
-    }
-
-    private void initSkin() {
-        ensureSkin();
-        int lw = skinCardW(), rx = cx + lw + 8, rw = cw - lw - 8;
-        int sw = Math.max(8, Math.min(16, (rw - 20) / 8));
-        for (int i = 0; i < SKIN_PAL.length; i++) {
-            final int c = SKIN_PAL[i];
-            hit("skpal" + i, rx + 10 + (i % 8) * (sw + 1), top + 24 + (i / 8) * (sw + 1), sw, sw, () -> {
-                skinColor = c;
-                skinHex = String.format("%06X", c & 0xFFFFFF);
-                skinTool = 0;
-                init();
-            });
-        }
-        skinHexBox = makeBox(rx + 10, top + 74, rw - 20, skinHex, s -> {
-            skinHex = s;
-            String h = s.trim().replace("#", "");
-            if (h.matches("[0-9a-fA-F]{6}")) skinColor = 0xFF000000 | Integer.parseInt(h, 16);
-        }, false);
-        skinHexBox.setMaxLength(7);
-        int cwid = (rw - 20 - 8) / 3;
-        hit("sktool0", rx + 10, top + 98, cwid, 16, () -> skinTool = 0);
-        hit("sktool1", rx + 14 + cwid, top + 98, cwid, 16, () -> skinTool = 1);
-        hit("sktool2", rx + 18 + 2 * cwid, top + 98, cwid, 16, () -> skinTool = 2);
-        hit("skload", rx + 10, top + 118, cwid, 16, this::loadMySkin);
-        hit("skundo", rx + 14 + cwid, top + 118, cwid, 16, () -> { if (!skinUndo.isEmpty()) skinImg = skinUndo.removeLast(); });
-        hit("skclear", rx + 18 + 2 * cwid, top + 118, cwid, 16, () -> { pushUndo(); skinImg = new BufferedImage(64, 64, BufferedImage.TYPE_INT_ARGB); });
-    }
-
-    private int skinCardW() {
-        skinScale = clampi(Math.min((cw - 190) / 64, (bottom - top - 28) / 64), 1, 4);
-        return 64 * skinScale + 16;
-    }
-
-    private void skinPaint(int mx, int my, boolean left, boolean right, boolean edge) {
-        if (skinImg == null) return;
-        if (mx < skinBox[0] || my < skinBox[1] || mx >= skinBox[0] + 64 * skinScale || my >= skinBox[1] + 64 * skinScale) return;
-        int px = (mx - skinBox[0]) / skinScale, py = (my - skinBox[1]) / skinScale;
-        if (edge) pushUndo();
-        if (right || (left && skinTool == 1)) skinImg.setRGB(px, py, 0);
-        else if (left && skinTool == 2) {
-            int c = skinImg.getRGB(px, py);
-            if ((c >>> 24) != 0) { skinColor = c | 0xFF000000; skinHex = String.format("%06X", c & 0xFFFFFF); if (skinHexBox != null) skinHexBox.setValue(skinHex); }
-        } else if (left) skinImg.setRGB(px, py, skinColor | 0xFF000000);
-    }
-
-    private void drawSkin(GuiGraphics g, int mx, int my) {
-        ensureSkin();
-        BufferedImage fresh = skinLoaded;
-        if (fresh != null) { skinLoaded = null; pushUndo(); skinImg = fresh; status = Component.literal("Loaded your skin"); }
-        int lw = skinCardW(), rx = cx + lw + 8, rw = cw - lw - 8;
-        card(g, cx, top, lw, bottom - top);
-        skinBox[0] = cx + 8; skinBox[1] = top + 8; skinBox[2] = 64 * skinScale; skinBox[3] = 64 * skinScale;
-        g.fill(skinBox[0], skinBox[1], skinBox[0] + skinBox[2], skinBox[1] + skinBox[3], 0xFF22252B);
-        for (int y = 0; y < 64; y++) {
-            for (int x = 0; x < 64; x++) {
-                int c = skinImg.getRGB(x, y);
-                if ((c >>> 24) == 0) continue;
-                g.fill(skinBox[0] + x * skinScale, skinBox[1] + y * skinScale, skinBox[0] + (x + 1) * skinScale, skinBox[1] + (y + 1) * skinScale, c | 0xFF000000);
-            }
-        }
-        if (mx >= skinBox[0] && my >= skinBox[1] && mx < skinBox[0] + skinBox[2] && my < skinBox[1] + skinBox[3]) {
-            int px = (mx - skinBox[0]) / skinScale, py = (my - skinBox[1]) / skinScale;
-            int hx = skinBox[0] + px * skinScale, hy = skinBox[1] + py * skinScale;
-            g.fill(hx, hy, hx + skinScale, hy + 1, 0xFFFFFFFF); g.fill(hx, hy + skinScale - 1, hx + skinScale, hy + skinScale, 0xFFFFFFFF);
-            g.fill(hx, hy, hx + 1, hy + skinScale, 0xFFFFFFFF); g.fill(hx + skinScale - 1, hy, hx + skinScale, hy + skinScale, 0xFFFFFFFF);
-            text(g, px + ", " + py, cx + 8, bottom - 14, muted());
-        }
-        if (skinLoading) text(g, "Loading...", cx + lw - 8 - font.width("Loading..."), bottom - 14, AMBER);
-
-        card(g, rx, top, rw, bottom - top);
-        bold(g, "Palette", rx + 10, top + 8, TEXT);
-        int sw = Math.max(8, Math.min(16, (rw - 20) / 8));
-        for (int i = 0; i < SKIN_PAL.length; i++) {
-            int sx = rx + 10 + (i % 8) * (sw + 1), sy = top + 24 + (i / 8) * (sw + 1);
-            if (SKIN_PAL[i] == skinColor) g.fill(sx - 1, sy - 1, sx + sw + 1, sy + sw + 1, 0xFFFFFFFF);
-            g.fill(sx, sy, sx + sw, sy + sw, SKIN_PAL[i]);
-        }
-        if (skinHexBox != null) field(g, skinHexBox, rx + 10, top + 74, rw - 20, "Hex colour", mx, my);
-        g.fill(rx + rw - 28, top + 62, rx + rw - 10, top + 72, skinColor | 0xFF000000);
-        int cwid = (rw - 20 - 8) / 3;
-        chip(g, "sktool0", new int[]{rx + 10, top + 98, cwid, 16}, "Pencil", skinTool == 0 ? 1 : 0, cAccent);
-        chip(g, "sktool1", new int[]{rx + 14 + cwid, top + 98, cwid, 16}, "Eraser", skinTool == 1 ? 1 : 0, cAccent);
-        chip(g, "sktool2", new int[]{rx + 18 + 2 * cwid, top + 98, cwid, 16}, "Picker", skinTool == 2 ? 1 : 0, cAccent);
-        chip(g, "skload", new int[]{rx + 10, top + 118, cwid, 16}, "Load mine", 0, cAccent2);
-        chip(g, "skundo", new int[]{rx + 14 + cwid, top + 118, cwid, 16}, "Undo", 0, cAccent2);
-        chip(g, "skclear", new int[]{rx + 18 + 2 * cwid, top + 118, cwid, 16}, "Clear", 0, RED);
-        text(g, fit("Right click erases. Hold to draw", rw - 20), rx + 10, top + 140, muted());
-        int fy = top + 154;
-        if (fy + 32 <= bottom - 4) {
-            for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) {
-                int base = skinImg.getRGB(8 + x, 8 + y), hat = skinImg.getRGB(40 + x, 8 + y);
-                int c = (hat >>> 24) > 0 ? hat : base;
-                if ((c >>> 24) == 0) continue;
-                g.fill(rx + 10 + x * 4, fy + y * 4, rx + 10 + x * 4 + 4, fy + y * 4 + 4, c | 0xFF000000);
-            }
-            text(g, "Face preview", rx + 50, fy + 12, muted());
-        }
-    }
-
-    // ---- waypoints tab ----
-    private static int wpPage = 0;
-    private List<String[]> wps = new ArrayList<>();
-
-    private int wpRows() { return Math.max(1, (bottom - top - 28) / 22); }
-
-    private static void saveWaypoints(List<String[]> l) throws Exception {
-        List<String> lines = new ArrayList<>();
-        for (String[] w : l) lines.add(String.join("\t", Extras.norm(w)));
-        Files.write(waypointPath(), lines);
-        Extras.wpAt = 0;
-    }
-
-    private void saveWps(String ok) {
-        try { saveWaypoints(wps); if (ok != null) status = Component.literal(ok); }
-        catch (Exception e) { status = Component.literal("Could not save: " + e.getMessage()); }
-    }
-
-    private void initWaypoints() {
-        wps = loadWaypoints();
-        int rows = wpRows(), pages = Math.max(1, (wps.size() + rows - 1) / rows);
-        wpPage = clampi(wpPage, 0, pages - 1);
-        wpNameBox = makeBox(cx + 6, top - 1, 110, wpName, s -> wpName = s, false);
-        wpNameBox.setMaxLength(32);
-        wpNameBox.setHint(Component.literal("Name (optional)").withStyle(ChatFormatting.DARK_GRAY));
-        hit("wpmark", cx + 120, top, 70, 16, this::markWaypoint);
-        hit("wphud", cx + 194, top, 54, 16, () -> { Extras.wpHud = !Extras.wpHud; savePrefs(); });
-        hit("wpdeath", cx + 252, top, 62, 16, () -> { Extras.wpDeath = !Extras.wpDeath; savePrefs(); });
-        hit("wpprev", cx + cw - 44, top, 18, 16, () -> { wpPage = (wpPage + pages - 1) % pages; init(); });
-        hit("wpnext", cx + cw - 24, top, 18, 16, () -> { wpPage = (wpPage + 1) % pages; init(); });
-        for (int i = 0; i < rows; i++) {
-            final int idx = wpPage * rows + i;
-            if (idx >= wps.size()) break;
-            int ry = top + 22 + i * 22;
-            hit("wpcol" + i, cx + 10, ry + 2, 18, 16, () -> cycleWpColor(idx));
-            hit("wpvis" + i, cx + cw - 76, ry, 22, 20, () -> toggleWp(idx));
-            hit("wpcopy" + i, cx + cw - 52, ry, 22, 20, () -> copyWaypoint(idx));
-            hit("wpdel" + i, cx + cw - 28, ry, 22, 20, () -> deleteWaypoint(idx));
-        }
-    }
-
-    private void markWaypoint() {
-        status = Component.literal(markHere(wpName).replace("*", ""));
-        wpName = "";
-        init();
-    }
-
-    private void cycleWpColor(int idx) {
-        if (idx < 0 || idx >= wps.size()) return;
-        String[] w = Extras.norm(wps.get(idx));
-        int c = 0;
-        try { c = Integer.parseInt(w[5].trim()); } catch (Exception ignored) { }
-        w[5] = "" + ((Math.abs(c) + 1) % Extras.WP_COL.length);
-        wps.set(idx, w);
-        saveWps(null);
-    }
-
-    private void toggleWp(int idx) {
-        if (idx < 0 || idx >= wps.size()) return;
-        String[] w = Extras.norm(wps.get(idx));
-        w[6] = Extras.visible(w) ? "0" : "1";
-        wps.set(idx, w);
-        saveWps(w[0] + (w[6].equals("1") ? " shown on screen" : " hidden"));
-    }
-
-    private void copyWaypoint(int idx) {
-        if (idx < 0 || idx >= wps.size()) return;
-        String[] w = wps.get(idx);
-        Minecraft.getInstance().keyboardHandler.setClipboard(w[1] + " " + w[2] + " " + w[3]);
-        status = Component.literal("Copied " + w[0] + ": " + w[1] + " " + w[2] + " " + w[3]);
-    }
-
-    private void deleteWaypoint(int idx) {
-        if (idx < 0 || idx >= wps.size()) return;
-        wps.remove(idx);
-        saveWps("Removed waypoint");
-        init();
-    }
-
-    private void drawWaypoints(GuiGraphics g, int mx, int my) {
-        Minecraft mc = Minecraft.getInstance();
-        if (wpNameBox != null) field(g, wpNameBox, cx + 6, top - 1, 110, "", mx, my);
-        chip(g, "wpmark", new int[]{cx + 120, top, 70, 16}, "Mark here", 0, cAccent);
-        chip(g, "wphud", new int[]{cx + 194, top, 54, 16}, Extras.wpHud ? "HUD on" : "HUD off", Extras.wpHud ? 1 : 0, cAccent2);
-        chip(g, "wpdeath", new int[]{cx + 252, top, 62, 16}, "Death pt", Extras.wpDeath ? 1 : 0, cAccent2);
-        int rows = wpRows(), pages = Math.max(1, (wps.size() + rows - 1) / rows);
-        chip(g, "wpprev", new int[]{cx + cw - 44, top, 18, 16}, "<", 0, cAccent);
-        chip(g, "wpnext", new int[]{cx + cw - 24, top, 18, 16}, ">", 0, cAccent);
-        String pg = wps.size() + " saved  " + (wpPage + 1) + "/" + pages;
-        text(g, pg, cx + cw - 50 - font.width(pg), top + 4, muted());
-        card(g, cx, top + 20, cw, bottom - top - 20);
-        if (wps.isEmpty()) {
-            text(g, fit("No waypoints yet. Press Mark here in a world (or !mark <name> in Discord).", cw - 24), cx + 12, top + 32, muted());
-            return;
-        }
-        String curDim = mc.level != null ? Extras.dimension(mc) : "";
-        for (int i = 0; i < rows; i++) {
-            int idx = wpPage * rows + i;
-            if (idx >= wps.size()) break;
-            String[] w = Extras.norm(wps.get(idx));
-            int ry = top + 22 + i * 22;
-            round(g, cx + 6, ry, cw - 12, 20, alpha(cAccent, 0.06f));
-            round(g, cx + 12, ry + 4, 14, 12, Extras.color(w));
-            boolean vis = Extras.visible(w);
-            bold(g, fit(w[0], cw - 270), cx + 32, ry + 6, vis ? TEXT : muted());
-            String dist = "";
-            if (mc.player != null && w[4].equals(curDim)) {
-                try {
-                    double dx = Double.parseDouble(w[1]) - mc.player.getX(), dz = Double.parseDouble(w[3]) - mc.player.getZ();
-                    dist = "  " + Math.round(Math.sqrt(dx * dx + dz * dz)) + "m";
-                } catch (Exception ignored) { }
-            }
-            String c = w[1] + " " + w[2] + " " + w[3] + "  " + w[4].replace("minecraft:", "") + dist;
-            text(g, fit(c, 220), cx + cw - 84 - Math.min(220, font.width(c)), ry + 6, muted());
-            round(g, cx + cw - 76, ry, 22, 20, hov("wpvis" + i) ? GREEN : alpha(vis ? GREEN : 0xFF888888, 0.35f));
-            text(g, vis ? "on" : "off", cx + cw - 76 + (22 - font.width(vis ? "on" : "off")) / 2, ry + 6, TEXT);
-            round(g, cx + cw - 52, ry, 22, 20, hov("wpcopy" + i) ? cAccent : alpha(cAccent, 0.3f));
-            text(g, "c", cx + cw - 52 + 8, ry + 6, TEXT);
-            round(g, cx + cw - 28, ry, 22, 20, hov("wpdel" + i) ? RED : alpha(RED, 0.25f));
-            text(g, "x", cx + cw - 28 + 8, ry + 6, TEXT);
-        }
     }
 
     // ---- training tab: CPS test + aim trainer (everything is a real button) ----
@@ -1353,43 +952,6 @@ public class ToggleScreen extends Screen {
         }
     }
 
-    // ---- stats tab ----
-    private void copyPos() {
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.player == null) { status = Component.literal("Join a world first"); return; }
-        String p = Math.round(mc.player.getX()) + " " + Math.round(mc.player.getY()) + " " + Math.round(mc.player.getZ());
-        mc.keyboardHandler.setClipboard(p);
-        status = Component.literal("Copied position: " + p);
-    }
-
-    private void drawStats(GuiGraphics g) {
-        Minecraft mc = Minecraft.getInstance();
-        card(g, cx, top, cw, bottom - top);
-        bold(g, "Live stats", cx + 10, top + 8, TEXT);
-        if (mc.player == null) { text(g, "Join a world to see your stats", cx + 12, top + 26, muted()); return; }
-        var p = mc.player;
-        int lat = 0, online = 0;
-        if (mc.getConnection() != null) {
-            online = mc.getConnection().getOnlinePlayers().size();
-            PlayerInfo me = mc.getConnection().getPlayerInfo(p.getUUID());
-            if (me != null) lat = me.getLatency();
-        }
-        String[][] rows = {
-                {"Position", Math.round(p.getX()) + "  " + Math.round(p.getY()) + "  " + Math.round(p.getZ())},
-                {"Health", Math.round(p.getHealth()) + " / " + Math.round(p.getMaxHealth())},
-                {"Food", p.getFoodData().getFoodLevel() + " / 20"},
-                {"Armor", "" + p.getArmorValue()},
-                {"Ping", lat > 0 ? lat + " ms" : "-"},
-                {"Players online", "" + online},
-        };
-        for (int i = 0; i < rows.length; i++) {
-            int ry = top + 28 + i * 16;
-            round(g, cx + 8, ry - 2, cw - 16, 14, alpha(cAccent, 0.06f));
-            text(g, rows[i][0], cx + 14, ry + 1, muted());
-            text(g, rows[i][1], cx + cw - 14 - font.width(rows[i][1]), ry + 1, TEXT);
-        }
-    }
-
     // ---- chat tab layout ----
     private void initChat() {
         int lw = discLeftW(), fx0 = cx + 12, fw = lw - 24;
@@ -1401,6 +963,13 @@ public class ToggleScreen extends Screen {
         int bw = (fw - 4) / 2;
         hit("clog", fx0, top + 142, bw, 18, () -> { ChatBridge.sendLogNow(); status = Component.literal("Sending the chat log..."); });
         hit("ctest", fx0 + bw + 4, top + 142, bw, 18, () -> DiscordBot.sendChatText("Test message from Trim Studio"));
+    }
+
+    private void copyInvite() {
+        String url = DiscordBot.inviteUrl();
+        if (url.isEmpty()) { status = Component.literal("Enter a valid bot token first"); return; }
+        Minecraft.getInstance().keyboardHandler.setClipboard(url);
+        status = Component.literal("Invite link copied. Open it once so the bot can use / commands");
     }
 
     private void sendChat() {
@@ -1469,11 +1038,74 @@ public class ToggleScreen extends Screen {
             text(g, fit(t, rw - 20), rx + 10, top + 24 + i * 12, TEXT);
         }
         int hy = top + rh - 66;
-        text(g, "Discord: !run walk 3; jump", rx + 10, hy, muted());
-        text(g, "!script <name>  !scripts  !stop", rx + 10, hy + 11, muted());
+        text(g, "Discord: /run steps:walk 3; jump", rx + 10, hy, muted());
+        text(g, "/script  /scripts  /savescript  /stop", rx + 10, hy + 11, muted());
         text(g, fit("walk run back left right sneak use <sec>", rw - 20), rx + 10, hy + 22, muted());
         text(g, fit("jump attack <n>  wait <sec>  look <yaw> <pitch>", rw - 20), rx + 10, hy + 33, muted());
         text(g, fit("turn <deg>  repeat <n> ... end  stop", rw - 20), rx + 10, hy + 44, muted());
+    }
+
+    // ---- discord fun page ----
+    private void initFun() {
+        int lw = discLeftW(), fx0 = cx + 12, fw = lw - 24;
+        hit("opt20", cx + 6, top + 24, lw - 12, 16, () -> { Fun.on = !Fun.on; savePrefs(); });
+        int bw = (fw - 4) / 2, b3 = (fw - 8) / 3;
+        hit("fitb", fx0, top + 50, bw, 18, this::funFit);
+        hit("flipb", fx0 + bw + 4, top + 50, bw, 18, () -> funSay(Fun.flip()));
+        hit("rollb", fx0, top + 72, bw, 18, () -> funSay(Fun.roll(20, 1)));
+        hit("ballb", fx0 + bw + 4, top + 72, bw, 18, () -> funSay(Fun.eightBall(Fun.EIGHT_BALL_PROMPT)));
+        for (int i = 0; i < 3; i++) {
+            final String move = FUN_MOVES[i].toLowerCase(Locale.ROOT);
+            hit("rps" + i, fx0 + i * (b3 + 4), top + 98, b3, 18, () -> funSay(Fun.rps(move)));
+        }
+        hit("fpost", fx0, top + 124, bw, 18, () -> {
+            DiscordBot.sendText(Fun.last());
+            status = Component.literal(DiscordBot.isRunning() ? "Posting the last result to Discord..." : "Connect the bot first (Bot page)");
+        });
+        hit("fwear", fx0 + bw + 4, top + 124, bw, 18, () -> {
+            int[] f = Fun.lastFit();
+            if (f == null) { status = Component.literal("Rate a fit first"); return; }
+            useLoadout(f[0], f[1], f[2]);
+            status = Component.literal("Loaded that fit into Trims");
+        });
+    }
+
+    private static final String[] FUN_MOVES = {"Rock", "Paper", "Scissors"};
+
+    private void funFit() { funSay(Fun.fit()); }
+
+    private void funSay(String result) { status = Component.literal(fit(Fun.plain(result).replace('\n', ' '), 300)); }
+
+    private void drawFun(GuiGraphics g) {
+        int lw = discLeftW(), fx0 = cx + 12, fw = lw - 24;
+        card(g, cx, top, lw, bottom - top);
+        bold(g, "Party games", cx + 10, top + 8, TEXT);
+        optionRow(g, 20, cx + 6, top + 24, lw - 12, "Fun commands in Discord", null, Fun.on);
+        int bw = (fw - 4) / 2, b3 = (fw - 8) / 3;
+        chip(g, "fitb", new int[]{fx0, top + 50, bw, 18}, "Rate a fit", 0, cAccent);
+        chip(g, "flipb", new int[]{fx0 + bw + 4, top + 50, bw, 18}, "Flip a coin", 0, cAccent);
+        chip(g, "rollb", new int[]{fx0, top + 72, bw, 18}, "Roll a d20", 0, cAccent);
+        chip(g, "ballb", new int[]{fx0 + bw + 4, top + 72, bw, 18}, "8-ball", 0, cAccent);
+        for (int i = 0; i < 3; i++) chip(g, "rps" + i, new int[]{fx0 + i * (b3 + 4), top + 98, b3, 18}, FUN_MOVES[i], 0, cAccent2);
+        chip(g, "fpost", new int[]{fx0, top + 124, bw, 18}, "Post last", 0, cAccent2);
+        chip(g, "fwear", new int[]{fx0 + bw + 4, top + 124, bw, 18}, "Wear it", 0, cAccent2);
+        boolean on = DiscordBot.isRunning();
+        text(g, fit(on ? "Bot is online: try /fit in Discord" : "Connect the bot on the Bot page first", lw - 20), cx + 10, top + 150, on ? GREEN : muted());
+
+        int rx = cx + lw + 8, rw = cw - lw - 8, rh = bottom - top;
+        card(g, rx, top, rw, rh);
+        bold(g, "Last result", rx + 10, top + 8, TEXT);
+        List<FormattedCharSequence> lines = font.split(Component.literal(Fun.plain(Fun.last())), rw - 20);
+        for (int i = 0; i < Math.min(5, lines.size()); i++) g.drawString(font, lines.get(i), rx + 10, top + 22 + i * 10, TEXT, false);
+        bold(g, "This session", rx + 10, top + 80, TEXT);
+        String[] st = Fun.stats();
+        for (int i = 0; i < st.length; i++) text(g, fit(st[i], rw - 20), rx + 10, top + 94 + i * 11, i == 1 ? muted() : TEXT);
+        int hy = top + rh - 34;
+        if (hy > top + 140) {
+            text(g, fit("In Discord:  /fit  /roll  /flip", rw - 20), rx + 10, hy, muted());
+            text(g, fit("/8ball question  /rps choice", rw - 20), rx + 10, hy + 11, muted());
+            text(g, fit("Wear it puts the last fit in Trims", rw - 20), rx + 10, hy + 22, muted());
+        }
     }
 
     // ---- settings pages ----
@@ -1538,13 +1170,9 @@ public class ToggleScreen extends Screen {
     private String applyLabel() {
         return switch (tab) {
             case T_TRIMS -> "Copy /give command";
-            case T_WARDROBE -> "Save current set";
-            case T_WAYPOINTS -> "Mark here";
-            case T_DISCORD -> discPage == 2 ? (Scripts.isActive() ? "Stop script" : "Run script") : discPage == 1 ? "Send chat log now" : (DiscordBot.isRunning() ? "Disconnect bot" : "Connect bot");
+            case T_DISCORD -> discPage == 3 ? "Rate a fit" : discPage == 2 ? (Scripts.isActive() ? "Stop script" : "Run script") : discPage == 1 ? "Send chat log now" : (DiscordBot.isRunning() ? "Disconnect bot" : "Connect bot");
             case T_COMBO -> "Reset combo";
-            case T_SKIN -> "Save skin PNG";
             case T_PLAYERS -> "Refresh list";
-            case T_STATS -> "Copy my position";
             case T_VOICE -> "Refresh list";
             case T_TRAIN -> trainPage == 0 ? "Reset CPS" : (aimRunning ? "Stop" : "Start aim round");
             default -> "Reset preview";
@@ -1554,17 +1182,14 @@ public class ToggleScreen extends Screen {
     private void doApply() {
         switch (tab) {
             case T_TRIMS -> copyGive();
-            case T_WARDROBE -> saveLoadout();
-            case T_WAYPOINTS -> markWaypoint();
             case T_DISCORD -> {
-                if (discPage == 2) { status = Component.literal(Scripts.isActive() ? Scripts.stop() : Scripts.run(scriptText).replace("`", "")); }
+                if (discPage == 3) funFit();
+                else if (discPage == 2) { status = Component.literal(Scripts.isActive() ? Scripts.stop() : Scripts.run(scriptText).replace("`", "")); }
                 else if (discPage == 1) { ChatBridge.sendLogNow(); status = Component.literal("Sending the chat log..."); }
                 else if (DiscordBot.isRunning()) DiscordBot.stop(); else { savePrefs(); DiscordBot.start(); }
             }
             case T_COMBO -> { Extras.resetCombo(); status = Component.literal("Combo stats reset"); }
-            case T_SKIN -> saveSkin();
             case T_PLAYERS -> init();
-            case T_STATS -> copyPos();
             case T_VOICE -> init();
             case T_TRAIN -> trainAction();
             default -> { viewYaw = 0.35f; status = Component.literal("Preview reset"); }
@@ -1616,8 +1241,6 @@ public class ToggleScreen extends Screen {
         if (tab == T_TRIMS) {
             if (edge && mx >= prevBox[0] && mx < prevBox[2] && my >= prevBox[1] && my < prevBox[3]) prevDrag = true;
             if (prevDrag) viewYaw = Math.max(-1.2f, Math.min(1.2f, viewYaw + (mx - prevMx) / 45f));
-        } else if (tab == T_SKIN) {
-            skinPaint(mx, my, left, right, edge);
         } else if (tab == T_SETTINGS && setChip == 3) {
             if (edge) {
                 for (int col = 0; col < 2; col++) {
@@ -1694,44 +1317,120 @@ public class ToggleScreen extends Screen {
         return DefaultPlayerSkin.get(id);
     }
 
+    // 14x14 pixel icons, one per tab (same order as TABS). # = main colour, + = softer shade, . = empty
+    private static final String[][] ICONS = {
+            {"..###....###..",
+             ".#####..#####.",
+             "##############",
+             "###+######+###",
+             ".#####++#####.",
+             "..###++++###..",
+             "..####++####..",
+             "..##########..",
+             "..##########..",
+             "..##+####+##..",
+             "..##########..",
+             "..##########..",
+             "...########...",
+             "....######...."},
+            {"..............",
+             "..##########..",
+             ".############.",
+             "##############",
+             "##++##++##++##",
+             "##++##++##++##",
+             "##############",
+             ".############.",
+             "..##########..",
+             "..####........",
+             "..###.........",
+             "..##..........",
+             "..............",
+             ".............."},
+            {"..............",
+             "...####.......",
+             "..######..###.",
+             "..######.#####",
+             "..######.#####",
+             "...####...###.",
+             "..............",
+             ".########.####",
+             "##########.###",
+             "##########.###",
+             "##########.###",
+             "##########.###",
+             "..............",
+             ".............."},
+            {"##..........##",
+             ".##........##.",
+             "..##......##..",
+             "...##....##...",
+             "....##..##....",
+             ".....####.....",
+             "......##......",
+             ".....####.....",
+             "....##..##....",
+             ".+++++..+++++.",
+             "..##......##..",
+             "..#........#..",
+             ".##........##.",
+             "##..........##"},
+            {".....####.....",
+             "....######....",
+             "....######....",
+             "....##++##....",
+             "....######....",
+             "....######....",
+             ".#..######..#.",
+             ".#...####...#.",
+             ".#..........#.",
+             ".##........##.",
+             "..###....###..",
+             "...########...",
+             "......##......",
+             "....######...."},
+            {"......##......",
+             "...########...",
+             "..###....###..",
+             ".##........##.",
+             ".##..++++..##.",
+             ".#..+....+..#.",
+             "##..+.##.+..##",
+             "##..+.##.+..##",
+             ".#..+....+..#.",
+             ".##..++++..##.",
+             ".##........##.",
+             "..###....###..",
+             "...########...",
+             "......##......"},
+            {".....####.....",
+             "...#.####.#...",
+             "..##########..",
+             ".############.",
+             "..##########..",
+             "#####....#####",
+             "#####....#####",
+             "#####....#####",
+             "#####....#####",
+             "..##########..",
+             ".############.",
+             "..##########..",
+             "...#.####.#...",
+             ".....####....."}
+    };
+
     private void icon(GuiGraphics g, int i, int x, int y, int c, int bgc) {
-        switch (i) {
-            case T_TRIMS -> {
-                g.fill(x + 2, y, x + 12, y + 2, c); g.fill(x, y + 2, x + 14, y + 13, c);
-                g.fill(x + 1, y + 5, x + 13, y + 7, bgc); g.fill(x + 3, y + 9, x + 11, y + 13, bgc);
+        String[] bm = ICONS[Math.max(0, Math.min(ICONS.length - 1, i))];
+        int soft = mix(c, bgc, 0.55f);
+        for (int r = 0; r < bm.length; r++) {
+            String row = bm[r];
+            int start = 0;
+            for (int k = 1; k <= row.length(); k++) {
+                if (k < row.length() && row.charAt(k) == row.charAt(start)) continue;
+                char ch = row.charAt(start);
+                if (ch != '.') g.fill(x + start, y + r, x + k, y + r + 1, ch == '+' ? soft : c);
+                start = k;
             }
-            case T_WARDROBE -> { // shirt
-                g.fill(x, y + 1, x + 5, y + 5, c); g.fill(x + 9, y + 1, x + 14, y + 5, c);
-                g.fill(x + 3, y + 1, x + 11, y + 14, c); g.fill(x + 5, y + 1, x + 9, y + 3, bgc);
-            }
-            case T_WAYPOINTS -> { // map pin
-                disc(g, x + 7, y + 5, 5, c); disc(g, x + 7, y + 5, 2, bgc); g.fill(x + 6, y + 9, x + 8, y + 14, c);
-            }
-            case T_DISCORD -> { // game-pad-ish chat face
-                g.fill(x + 1, y + 2, x + 13, y + 12, c); g.fill(x + 3, y + 12, x + 6, y + 14, c); g.fill(x + 8, y + 12, x + 11, y + 14, c);
-                g.fill(x + 3, y + 5, x + 5, y + 8, bgc); g.fill(x + 9, y + 5, x + 11, y + 8, bgc);
-            }
-            case T_COMBO -> { // flame
-                g.fill(x + 5, y, x + 9, y + 3, c); g.fill(x + 3, y + 3, x + 11, y + 8, c); g.fill(x + 1, y + 8, x + 13, y + 14, c); g.fill(x + 5, y + 9, x + 9, y + 13, bgc);
-            }
-            case T_SKIN -> { // brush
-                g.fill(x + 8, y, x + 13, y + 5, c); g.fill(x + 5, y + 4, x + 11, y + 9, c); g.fill(x + 1, y + 8, x + 7, y + 14, c); g.fill(x + 3, y + 10, x + 5, y + 12, bgc);
-            }
-            case T_PLAYERS -> { // two heads
-                g.fill(x + 1, y + 1, x + 6, y + 6, c); g.fill(x, y + 8, x + 7, y + 14, c);
-                g.fill(x + 8, y + 3, x + 13, y + 8, c); g.fill(x + 7, y + 9, x + 14, y + 14, c);
-            }
-            case T_VOICE -> { // microphone
-                g.fill(x + 5, y, x + 9, y + 8, c); g.fill(x + 3, y + 6, x + 4, y + 9, c); g.fill(x + 10, y + 6, x + 11, y + 9, c);
-                g.fill(x + 3, y + 9, x + 11, y + 10, c); g.fill(x + 6, y + 10, x + 8, y + 13, c); g.fill(x + 4, y + 13, x + 10, y + 14, c);
-            }
-            case T_TRAIN -> { // lightning bolt
-                g.fill(x + 7, y, x + 11, y + 6, c); g.fill(x + 3, y + 6, x + 11, y + 8, c); g.fill(x + 3, y + 8, x + 7, y + 14, c);
-            }
-            case T_STATS -> { // bars
-                g.fill(x + 1, y + 8, x + 4, y + 14, c); g.fill(x + 5, y + 4, x + 8, y + 14, c); g.fill(x + 9, y + 1, x + 12, y + 14, c);
-            }
-            default -> { g.fill(x + 6, y, x + 8, y + 14, c); g.fill(x, y + 6, x + 14, y + 8, c); disc(g, x + 7, y + 7, 5, c); disc(g, x + 7, y + 7, 2, bgc); }
         }
     }
 
@@ -1794,13 +1493,9 @@ public class ToggleScreen extends Screen {
         g.enableScissor(saveCx - 2, top - 2, saveCx + cw + 2, bottom + 2);
         try {
             switch (tab) {
-                case T_WARDROBE -> drawWardrobe(g);
-                case T_WAYPOINTS -> drawWaypoints(g, mx, my);
                 case T_DISCORD -> drawDiscordTab(g, mx, my);
                 case T_COMBO -> drawCombo(g, mx, my);
-                case T_SKIN -> drawSkin(g, mx, my);
                 case T_PLAYERS -> drawPlayers(g, mx, my);
-                case T_STATS -> drawStats(g);
                 case T_VOICE -> drawVoice(g);
                 case T_TRAIN -> drawTrain(g);
                 case T_SETTINGS -> drawSettings(g);
@@ -1982,7 +1677,7 @@ public class ToggleScreen extends Screen {
 
     private void drawBottom(GuiGraphics g) {
         String msg = status.getString();
-        if (msg.isEmpty()) msg = "1-9 tabs  |  L layout  |  Ctrl+K search";
+        if (msg.isEmpty()) msg = "1-" + TABS.length + " tabs  |  L layout  |  Ctrl+K search";
         text(g, fit(msg, cw - applyW - 16), cx + 2, applyY + 8, muted());
         float h = ease("applyhov", hov("apply") ? 1 : 0, 14);
         round(g, applyX - 1, applyY - 1, applyW + 2, applyH + 2, alpha(cAccent2, 0.25f * h));
@@ -2045,42 +1740,6 @@ public class ToggleScreen extends Screen {
 
     private static int[] shifted(int[] r, int dx) { return new int[]{r[0] + dx, r[1], r[2], r[3]}; }
 
-    // ---- wardrobe tab ----
-    private void drawWardrobe(GuiGraphics g) {
-        chip(g, "wsave", new int[]{cx + 6, top, 104, 16}, "Save current set", 0, cAccent);
-        int pages = Math.max(1, (wardrobe.size() + wRows - 1) / wRows);
-        text(g, wardrobe.size() + " saved", cx + 118, top + 4, muted());
-        chip(g, "wprev", new int[]{cx + cw - 44, top, 18, 16}, "<", 0, cAccent);
-        chip(g, "wnext", new int[]{cx + cw - 24, top, 18, 16}, ">", 0, cAccent);
-        String pg = (wPage + 1) + "/" + pages;
-        text(g, pg, cx + cw - 50 - font.width(pg), top + 4, muted());
-
-        card(g, cx, top + 20, cw, bottom - top - 20);
-        if (wardrobe.isEmpty()) {
-            text(g, "Nothing saved yet. Pick armor, material and pattern in Trims, then save the set here.", cx + 12, top + 32, muted());
-            return;
-        }
-        for (int i = 0; i < wRows; i++) {
-            int idx = wPage * wRows + i;
-            if (idx >= wardrobe.size()) break;
-            int[] e = entry(wardrobe.get(idx));
-            if (e == null) continue;
-            int ry = top + 22 + i * 22;
-            int dx = (int) ((1f - stag(i)) * 24 * tabDir);
-            float hv = ease("wrowhov" + i, hov("wrow" + i) ? 1 : 0, 14);
-            if (hv > 0.02f) round(g, cx + 6 + dx, ry, cw - 12, 20, alpha(cAccent, 0.12f * hv));
-            round(g, cx + 12 + dx, ry + 4, 12, 12, MAT_COL[e[1]]);
-            bold(g, fit(PATTERNS[e[2]] + " / " + MATS[e[1]], cw - 190), cx + 30 + dx, ry + 6, TEXT);
-            StringBuilder pcs = new StringBuilder();
-            String[] pn = {"H", "C", "L", "B"};
-            for (int k = 0; k < 4; k++) pcs.append((e[3] >> k & 1) != 0 ? pn[k] : "-");
-            text(g, ARMOR_NAMES[e[0]] + "  " + pcs, cx + cw - 150 + dx, ry + 6, muted());
-            boolean dh = hov("wdel" + i);
-            round(g, cx + cw - 6 - 22 + dx, ry, 22, 20, dh ? RED : alpha(RED, 0.25f));
-            text(g, "x", cx + cw - 6 - 14 + dx, ry + 6, TEXT);
-        }
-    }
-
     // ---- discord tab ----
     private void field(GuiGraphics g, EditBox b, int x, int y, int w, String label, int mx, int my) {
         text(g, label, x, y - 10, muted());
@@ -2101,7 +1760,8 @@ public class ToggleScreen extends Screen {
         if (tokenBox != null) field(g, tokenBox, fx0, top + 43, fw, DiscordBot.lockToken ? "Bot token (locked)" : "Bot token (kept on this PC)", mx, my);
         if (chanBox != null) field(g, chanBox, fx0, top + 73, fw, "Channel ID", mx, my);
         if (userBox != null) field(g, userBox, fx0, top + 103, fw, "Only obey this user ID (optional)", mx, my);
-        optionRow(g, 5, cx + 6, top + 123, lw - 12, "Listen for !commands", null, DiscordBot.listen);
+        optionRow(g, 5, cx + 6, top + 123, lw - 12, "Accept / commands", null, DiscordBot.listen);
+        chip(g, "dinvite", new int[]{fx0, top + 141, fw, 18}, "Copy invite link", 0, cAccent2);
         int bw = (lw - 24 - 4) / 2, by = top + 163;
         chip(g, "dcon", new int[]{fx0, by, bw, 18}, on ? "Disconnect" : "Connect", on ? 1 : 0, RED);
         chip(g, "dtrim", new int[]{fx0 + bw + 4, by, bw, 18}, "Send trim", 0, cAccent);
@@ -2118,10 +1778,10 @@ public class ToggleScreen extends Screen {
         if (log.isEmpty()) text(g, "Nothing yet", rx + 10, top + 22, muted());
         for (int i = startIdx; i < log.size(); i++) text(g, fit(log.get(i), rw - 20), rx + 10, top + 22 + (i - startIdx) * 10, TEXT);
         int hy = top + rh - 46;
-        text(g, "Commands in the channel:", rx + 10, hy, muted());
-        text(g, fit("!trim  !random  !players  !wp", rw - 20), rx + 10, hy + 11, TEXT);
-        text(g, fit("!set <armor> <pattern> <material>", rw - 20), rx + 10, hy + 22, TEXT);
-        text(g, fit("Enable Message Content Intent on the bot", rw - 20), rx + 10, hy + 33, muted());
+        text(g, "Type / in Discord:", rx + 10, hy, muted());
+        text(g, fit("/trim  /random  /set  /players  /combo", rw - 20), rx + 10, hy + 11, TEXT);
+        text(g, fit("/run  /say  /fit  /roll  /rps  /help", rw - 20), rx + 10, hy + 22, TEXT);
+        text(g, fit("Invite the bot with the link above (once)", rw - 20), rx + 10, hy + 33, muted());
     }
 
     // ---- chat tab ----
@@ -2131,7 +1791,7 @@ public class ToggleScreen extends Screen {
         bold(g, "Minecraft chat bridge", cx + 10, top + 7, TEXT);
         if (chatChanBox != null) field(g, chatChanBox, fx0, top + 34, fw, "Chat channel ID", mx, my);
         optionRow(g, 12, cx + 6, top + 60, lw - 12, "Log all chat to Discord", null, DiscordBot.logChat);
-        optionRow(g, 13, cx + 6, top + 78, lw - 12, "Allow !say from Discord", null, DiscordBot.sayOn);
+        optionRow(g, 13, cx + 6, top + 78, lw - 12, "Allow /say from Discord", null, DiscordBot.sayOn);
         optionRow(g, 14, cx + 6, top + 96, lw - 12, "Hourly chat file (in game only)", null, DiscordBot.hourly);
         optionRow(g, 15, cx + 6, top + 114, lw - 12, "Show player heads in Discord", null, DiscordBot.chatEmbeds);
         int bw = (fw - 4) / 2;
@@ -2156,9 +1816,9 @@ public class ToggleScreen extends Screen {
             text(g, fit(l.plain(), rw - 31), rx + 21, ly, l.id() != null ? TEXT : muted());
         }
         int hy = top + rh - 34;
-        text(g, fit("In the chat channel: !say <message>", rw - 20), rx + 10, hy, muted());
+        text(g, fit("In Discord: /say message", rw - 20), rx + 10, hy, muted());
         text(g, fit("says it in game as you (no / commands).", rw - 20), rx + 10, hy + 11, muted());
-        text(g, fit("Set a user ID on the Discord tab for safety.", rw - 20), rx + 10, hy + 22, muted());
+        text(g, fit("Needs your user ID on the Bot page.", rw - 20), rx + 10, hy + 22, muted());
     }
 
     // ---- settings ----
