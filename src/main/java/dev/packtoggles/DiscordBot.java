@@ -154,6 +154,31 @@ public final class DiscordBot {
         sendJson(chatChannelId, o);
     }
 
+    /** Embeds plus the attached head images they point at (icon_url "attachment://name.png"). */
+    static void postChatEmbedsFiles(JsonArray embeds, java.util.Map<String, byte[]> files) throws Exception {
+        JsonObject o = payload("");
+        o.remove("content");
+        o.add("embeds", embeds);
+        for (int attempt = 0; ; attempt++) {
+            String b = "----trimstudio" + System.nanoTime();
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            out.write(("--" + b + "\r\nContent-Disposition: form-data; name=\"payload_json\"\r\nContent-Type: application/json\r\n\r\n" + o + "\r\n").getBytes(StandardCharsets.UTF_8));
+            int n = 0;
+            for (java.util.Map.Entry<String, byte[]> f : files.entrySet()) {
+                out.write(("--" + b + "\r\nContent-Disposition: form-data; name=\"files[" + n++ + "]\"; filename=\"" + f.getKey() + "\"\r\nContent-Type: image/png\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+                out.write(f.getValue());
+                out.write("\r\n".getBytes(StandardCharsets.UTF_8));
+            }
+            out.write(("--" + b + "--\r\n").getBytes(StandardCharsets.UTF_8));
+            HttpResponse<String> r = HTTP.send(req("/channels/" + chatChannelId.trim() + "/messages")
+                    .header("Content-Type", "multipart/form-data; boundary=" + b)
+                    .POST(HttpRequest.BodyPublishers.ofByteArray(out.toByteArray())).build(), HttpResponse.BodyHandlers.ofString());
+            if (r.statusCode() == 429 && attempt < 2) { Thread.sleep(retryMs(r.body())); continue; }
+            if (r.statusCode() / 100 != 2) throw new Exception("HTTP " + r.statusCode() + " while sending");
+            return;
+        }
+    }
+
     static void postChatFile(String content, String name, byte[] data) throws Exception {
         postFileTo(chatChannelId, content, name, data, "text/plain");
     }
