@@ -59,8 +59,8 @@ import java.util.stream.Stream;
  */
 public class ToggleScreen extends Screen {
     private static final int TEXT = 0xFFF5E8DD, GREEN = 0xFF58D26F, RED = 0xFFE0564F, AMBER = 0xFFF0B429;
-    private static final String[] TABS = {"Trims", "Wardrobe", "Skin", "Discord", "Cape", "Gallery", "Website", "Settings"};
-    private static final int T_TRIMS = 0, T_WARDROBE = 1, T_SKIN = 2, T_DISCORD = 3, T_CAPE = 4, T_GALLERY = 5, T_WEBSITE = 6, T_SETTINGS = 7;
+    private static final String[] TABS = {"Trims", "Wardrobe", "Skin", "Discord", "Cape", "Settings"};
+    private static final int T_TRIMS = 0, T_WARDROBE = 1, T_SKIN = 2, T_DISCORD = 3, T_CAPE = 4, T_SETTINGS = 5;
     private static final String[] INTENSITY = {"Low", "Medium", "High"};
     private static final String[] SET_CHIPS = {"Layout", "Theme", "Display", "Colors"};
     private static final String[] SPEED = {"Slow", "Normal", "Fast"};
@@ -148,7 +148,7 @@ public class ToggleScreen extends Screen {
     private boolean colorsInit = false;
 
     // text fields
-    private EditBox search, tokenBox, chanBox, userBox, chatBox, chatChanBox, siteBox;
+    private EditBox search, tokenBox, chanBox, userBox, chatBox, chatChanBox;
     private int discPage = 0;   // 0 = bot, 1 = chat (both live on the Discord tab)
     private String chatText = "";
     private final List<EditBox> fields = new ArrayList<>();
@@ -245,8 +245,6 @@ public class ToggleScreen extends Screen {
         DiscordBot.hourly = getb(p, "dc.hourly", false);
         DiscordBot.sayOn = getb(p, "dc.say", true);
         DiscordBot.chatEmbeds = getb(p, "dc.embeds", true);
-        SiteClient.siteUrl = p.getProperty("site.url", SiteClient.siteUrl);
-        SiteClient.chatToSite = getb(p, "site.chat", false);
         wardrobe.clear();
         for (String s : p.getProperty("wardrobe", "").split(";")) if (!s.isBlank() && entry(s) != null) wardrobe.add(s);
     }
@@ -280,8 +278,6 @@ public class ToggleScreen extends Screen {
         p.setProperty("dc.hourly", "" + DiscordBot.hourly);
         p.setProperty("dc.say", "" + DiscordBot.sayOn);
         p.setProperty("dc.embeds", "" + DiscordBot.chatEmbeds);
-        p.setProperty("site.url", SiteClient.siteUrl);
-        p.setProperty("site.chat", "" + SiteClient.chatToSite);
         p.setProperty("wardrobe", String.join(";", wardrobe));
         try (OutputStream out = Files.newOutputStream(prefsPath())) { p.store(out, "Trim Studio settings (contains your Discord bot token, keep private)"); }
         catch (Exception e) { PackTogglesClient.LOG.warn("Could not save Trim Studio settings", e); }
@@ -581,7 +577,7 @@ public class ToggleScreen extends Screen {
             case T_WARDROBE -> initWardrobe();
             case T_SKIN -> initSkin();
             case T_DISCORD -> initDiscordTab();
-            case T_CAPE, T_GALLERY, T_WEBSITE -> initSite(tab);
+            case T_CAPE -> initCape();
             case T_SETTINGS -> initSettings();
             default -> { }
         }
@@ -813,45 +809,122 @@ public class ToggleScreen extends Screen {
         try { if (discPage == 0) drawDiscord(g, mx, my); else drawChat(g, mx, my); } finally { top -= 22; }
     }
 
-    // ---- cape / gallery / website tabs ----
-    private void initSite(int which) {
-        int fx0 = cx + 12, fw = cw - 24;
-        int by = top + 70;
-        if (which == T_WEBSITE) {
-            siteBox = makeBox(fx0, top + 43, Math.min(fw, 360), SiteClient.siteUrl, s -> SiteClient.siteUrl = s.trim(), false);
-            hit("opt16", cx + 6, top + 66, cw - 12, 16, () -> { SiteClient.chatToSite = !SiteClient.chatToSite; savePrefs(); });
-            by = top + 112;
+    // ---- cape editor tab ----
+    private static final int[] capePx = new int[64 * 32];          // ARGB, 0 = transparent
+    private static boolean capeInit = false;
+    private static int capeColor = 0xFFC8102E, capeTool = 0;       // 0 pen, 1 eraser, 2 fill, 3 picker
+    private static final String[] CAPE_TOOLS = {"Pen", "Eraser", "Fill", "Pick"};
+    private static final int[] CAPE_PAL = {0xFFC8102E, 0xFFF2762B, 0xFFFFD23F, 0xFF3BB273, 0xFF1B998B, 0xFF2E86DE, 0xFF5B4B8A, 0xFFE056A0,
+            0xFFFFFFFF, 0xFFBFC5D2, 0xFF7C8294, 0xFF3A3F4B, 0xFF111111, 0xFF7A4A21, 0xFFB7E4C7, 0xFF9AD1FF};
+
+    private static Path capePath() { return FabricLoader.getInstance().getConfigDir().resolve("trim-studio-cape.png"); }
+
+    private static void capeDefault() {
+        if (capeInit) return;
+        capeInit = true;
+        for (int y = 1; y < 17; y++) for (int x = 1; x < 11; x++) capePx[y * 64 + x] = 0xFFC8102E;
+        for (int y = 6; y < 10; y++) for (int x = 4; x < 8; x++) capePx[y * 64 + x] = 0xFFFFFFFF;
+    }
+
+    /** {x, y, scale} of the pixel canvas. */
+    private int[] capeCanvas() {
+        int sc = Math.max(2, Math.min(8, (cw - 24 - 84) / 64));
+        return new int[]{cx + 10, top + 22, sc};
+    }
+
+    private void capePaint(int x, int y, boolean edge) {
+        int i = y * 64 + x;
+        switch (capeTool) {
+            case 0 -> capePx[i] = capeColor;
+            case 1 -> capePx[i] = 0;
+            case 2 -> { if (edge) capeFill(x, y); }
+            default -> { if (edge && capePx[i] != 0) { capeColor = capePx[i]; capeTool = 0; } }
         }
-        hit("scopy", fx0, by, 130, 18, () -> copySiteLink(which));
     }
 
-    private void copySiteLink(int which) {
-        if (SiteClient.siteUrl.isBlank()) { status = Component.literal("Set the website address on the Website tab first"); return; }
-        String link = SiteClient.link(which == T_GALLERY ? "gallery" : which == T_WEBSITE ? "chat" : "");
-        Minecraft.getInstance().keyboardHandler.setClipboard(link);
-        status = Component.literal("Copied: " + link + "  (paste it in your browser)");
+    private void capeFill(int x, int y) {
+        int target = capePx[y * 64 + x];
+        if (target == capeColor) return;
+        ArrayDeque<int[]> st = new ArrayDeque<>();
+        st.push(new int[]{x, y});
+        while (!st.isEmpty()) {
+            int[] p = st.pop();
+            if (p[0] < 0 || p[1] < 0 || p[0] > 63 || p[1] > 31 || capePx[p[1] * 64 + p[0]] != target) continue;
+            capePx[p[1] * 64 + p[0]] = capeColor;
+            st.push(new int[]{p[0] + 1, p[1]}); st.push(new int[]{p[0] - 1, p[1]});
+            st.push(new int[]{p[0], p[1] + 1}); st.push(new int[]{p[0], p[1] - 1});
+        }
     }
 
-    private void drawSite(GuiGraphics g, int mx, int my, int which) {
-        int fx0 = cx + 12, fw = cw - 24;
+    private void saveCape() {
+        try {
+            BufferedImage img = new BufferedImage(64, 32, BufferedImage.TYPE_INT_ARGB);
+            for (int y = 0; y < 32; y++) for (int x = 0; x < 64; x++) img.setRGB(x, y, capePx[y * 64 + x]);
+            ImageIO.write(img, "png", capePath().toFile());
+            status = Component.literal("Saved cape to config/trim-studio-cape.png");
+        } catch (Exception e) {
+            status = Component.literal("Could not save the cape: " + e.getMessage());
+        }
+    }
+
+    private void loadCape() {
+        try {
+            BufferedImage img = ImageIO.read(capePath().toFile());
+            if (img == null) { status = Component.literal("No saved cape yet"); return; }
+            Arrays.fill(capePx, 0);
+            for (int y = 0; y < Math.min(32, img.getHeight()); y++) for (int x = 0; x < Math.min(64, img.getWidth()); x++) capePx[y * 64 + x] = img.getRGB(x, y);
+            status = Component.literal("Loaded config/trim-studio-cape.png");
+        } catch (Exception e) {
+            status = Component.literal("No saved cape yet (save one first)");
+        }
+    }
+
+    private void initCape() {
+        capeDefault();
+        int[] cv = capeCanvas();
+        int sc = cv[2], rx = cv[0] + 64 * sc + 12, by = cv[1] + 32 * sc + 6;
+        for (int i = 0; i < 4; i++) { final int t = i; hit("ctool" + i, cv[0] + i * 46, by, 42, 18, () -> capeTool = t); }
+        hit("cclear", cv[0], by + 22, 60, 18, () -> Arrays.fill(capePx, 0));
+        hit("csave", cv[0] + 64, by + 22, 60, 18, this::saveCape);
+        hit("cload", cv[0] + 128, by + 22, 60, 18, this::loadCape);
+        for (int i = 0; i < 16; i++) {
+            final int col = CAPE_PAL[i];
+            hit("csw" + i, rx + (i % 4) * 17, cv[1] + (i / 4) * 17, 15, 15, () -> { capeColor = col; if (capeTool != 2) capeTool = 0; });
+        }
+    }
+
+    private void drawCape(GuiGraphics g, int mx, int my) {
+        capeDefault();
         card(g, cx, top, cw, bottom - top);
-        String title = which == T_CAPE ? "Cape editor" : which == T_GALLERY ? "Cape gallery" : "Website";
-        bold(g, title, cx + 10, top + 7, TEXT);
-        String[] lines = which == T_CAPE
-                ? new String[]{"Paint a cape in your browser: pen, fill, picker, PNG import.", "Press Share and it shows up in the gallery for everyone."}
-                : which == T_GALLERY
-                ? new String[]{"Every cape people shared, with a download button.", "Open the link in your browser to look through them."}
-                : new String[]{"Your free site (Cloudflare). Chat logs show on its Discord / Chat tab."};
-        for (int i = 0; i < lines.length; i++) text(g, fit(lines[i], cw - 24), fx0, top + 22 + i * 11, muted());
-        int by = top + 70;
-        if (which == T_WEBSITE) {
-            if (siteBox != null) field(g, siteBox, fx0, top + 43, Math.min(fw, 360), "Website address", mx, my);
-            optionRow(g, 16, cx + 6, top + 66, cw - 12, "Send Minecraft chat to the website (every 5 min)", null, SiteClient.chatToSite);
-            String m = SiteClient.siteMsg.isEmpty() ? (SiteClient.chatToSite ? "Waiting for chat..." : "Off") : SiteClient.siteMsg;
-            text(g, fit(m, cw - 24), fx0, top + 90, muted());
-            by = top + 112;
+        bold(g, "Cape editor", cx + 10, top + 7, TEXT);
+        int[] cv = capeCanvas();
+        int sc = cv[2], x0 = cv[0], y0 = cv[1];
+        g.fill(x0 - 1, y0 - 1, x0 + 64 * sc + 1, y0 + 32 * sc + 1, cLine);
+        for (int y = 0; y < 32; y++) for (int x = 0; x < 64; x++) {
+            int col = capePx[y * 64 + x];
+            g.fill(x0 + x * sc, y0 + y * sc, x0 + (x + 1) * sc, y0 + (y + 1) * sc, col != 0 ? col : (((x + y) & 1) == 0 ? 0xFF2A2D36 : 0xFF23262E));
         }
-        chip(g, "scopy", new int[]{fx0, by, 130, 18}, "Copy link", 0, cAccent);
+        int ox = x0 + sc, oy = y0 + sc, ow = 10 * sc, oh = 16 * sc, a = 0xFFFFFFFF;   // outline: the back of the cape
+        g.fill(ox - 1, oy - 1, ox + ow + 1, oy, a); g.fill(ox - 1, oy + oh, ox + ow + 1, oy + oh + 1, a);
+        g.fill(ox - 1, oy, ox, oy + oh, a); g.fill(ox + ow, oy, ox + ow + 1, oy + oh, a);
+        int by = y0 + 32 * sc + 6;
+        for (int i = 0; i < 4; i++) chip(g, "ctool" + i, new int[]{x0 + i * 46, by, 42, 18}, CAPE_TOOLS[i], capeTool == i ? 1 : 0, cAccent);
+        chip(g, "cclear", new int[]{x0, by + 22, 60, 18}, "Clear", 0, cAccent);
+        chip(g, "csave", new int[]{x0 + 64, by + 22, 60, 18}, "Save PNG", 0, cAccent);
+        chip(g, "cload", new int[]{x0 + 128, by + 22, 60, 18}, "Load PNG", 0, cAccent);
+        int rx = x0 + 64 * sc + 12;
+        for (int i = 0; i < 16; i++) {
+            int sx = rx + (i % 4) * 17, sy = y0 + (i / 4) * 17;
+            if (CAPE_PAL[i] == capeColor) g.fill(sx - 2, sy - 2, sx + 17, sy + 17, 0xFFFFFFFF);
+            g.fill(sx, sy, sx + 15, sy + 15, CAPE_PAL[i]);
+        }
+        int py0 = y0 + 4 * 17 + 6;
+        text(g, "Preview (back)", rx, py0, muted());
+        for (int y = 0; y < 16; y++) for (int x = 0; x < 10; x++) {
+            int col = capePx[(y + 1) * 64 + x + 1];
+            g.fill(rx + x * 3, py0 + 12 + y * 3, rx + x * 3 + 3, py0 + 12 + y * 3 + 3, col != 0 ? col : 0xFF23262E);
+        }
+        text(g, fit("Left click paints, right click erases. Saved to config/trim-studio-cape.png", cw - 24), cx + 12, bottom - 12, muted());
     }
 
     // ---- chat tab layout ----
@@ -941,7 +1014,7 @@ public class ToggleScreen extends Screen {
             case T_WARDROBE -> "Save current set";
             case T_SKIN -> "Save recolored copy";
             case T_DISCORD -> discPage == 1 ? "Send chat log now" : (DiscordBot.isRunning() ? "Disconnect bot" : "Connect bot");
-            case T_CAPE, T_GALLERY, T_WEBSITE -> "Copy link";
+            case T_CAPE -> "Save cape PNG";
             default -> "Reset preview";
         };
     }
@@ -955,7 +1028,7 @@ public class ToggleScreen extends Screen {
                 if (discPage == 1) { ChatBridge.sendLogNow(); status = Component.literal("Sending the chat log..."); }
                 else if (DiscordBot.isRunning()) DiscordBot.stop(); else { savePrefs(); DiscordBot.start(); }
             }
-            case T_CAPE, T_GALLERY, T_WEBSITE -> copySiteLink(tab);
+            case T_CAPE -> saveCape();
             default -> { viewYaw = 0.35f; status = Component.literal("Preview reset"); }
         }
     }
@@ -1194,6 +1267,12 @@ public class ToggleScreen extends Screen {
         if (tab == T_TRIMS) {
             if (edge && mx >= prevBox[0] && mx < prevBox[2] && my >= prevBox[1] && my < prevBox[3]) prevDrag = true;
             if (prevDrag) viewYaw = Math.max(-1.2f, Math.min(1.2f, viewYaw + (mx - prevMx) / 45f));
+        } else if (tab == T_CAPE) {
+            int[] cv = capeCanvas();
+            if (mx >= cv[0] && mx < cv[0] + 64 * cv[2] && my >= cv[1] && my < cv[1] + 32 * cv[2]) {
+                int ppx = (mx - cv[0]) / cv[2], ppy = (my - cv[1]) / cv[2];
+                if (left) capePaint(ppx, ppy, edge); else capePx[ppy * 64 + ppx] = 0;
+            }
         } else if (tab == T_SKIN) {
             if (edge && left) {
                 for (int i = 0; i < 4; i++) {
@@ -1411,13 +1490,6 @@ public class ToggleScreen extends Screen {
                 g.fill(x + 3, y, x + 11, y + 2, c); g.fill(x + 2, y + 2, x + 12, y + 12, c); g.fill(x + 4, y + 12, x + 10, y + 14, c);
                 g.fill(x + 6, y + 5, x + 8, y + 9, bgc);
             }
-            case T_GALLERY -> { // grid of tiles
-                g.fill(x, y, x + 6, y + 6, c); g.fill(x + 8, y, x + 14, y + 6, c);
-                g.fill(x, y + 8, x + 6, y + 14, c); g.fill(x + 8, y + 8, x + 14, y + 14, c);
-            }
-            case T_WEBSITE -> { // globe
-                disc(g, x + 7, y + 7, 7, c); g.fill(x + 1, y + 6, x + 13, y + 8, bgc); g.fill(x + 6, y, x + 8, y + 14, bgc); disc(g, x + 7, y + 7, 3, c);
-            }
             default -> { g.fill(x + 6, y, x + 8, y + 14, c); g.fill(x, y + 6, x + 14, y + 8, c); disc(g, x + 7, y + 7, 5, c); disc(g, x + 7, y + 7, 2, bgc); }
         }
     }
@@ -1491,7 +1563,7 @@ public class ToggleScreen extends Screen {
                 case T_WARDROBE -> drawWardrobe(g);
                 case T_SKIN -> drawSkin(g);
                 case T_DISCORD -> drawDiscordTab(g, mx, my);
-                case T_CAPE, T_GALLERY, T_WEBSITE -> drawSite(g, mx, my, tab);
+                case T_CAPE -> drawCape(g, mx, my);
                 case T_SETTINGS -> drawSettings(g);
                 default -> drawTrims(g, mx, my);
             }
