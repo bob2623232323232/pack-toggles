@@ -14,7 +14,7 @@ import java.util.TreeMap;
 
 /**
  * Tiny script language for driving your own player (walk, run, jump...). Steps are separated by ; or new lines.
- * Scripts are started from the Scripts page or from Discord (only for the user ID you set).
+ * Scripts are started from the Scripts page or from Discord slash commands (/run, /script ...), only for the user ID you set.
  */
 final class Scripts {
     private record Step(String cmd, double a, double b) { }
@@ -95,6 +95,7 @@ final class Scripts {
         List<Step> steps;
         try { steps = parse(text == null ? "" : text); } catch (IllegalArgumentException e) { return "Script error: " + e.getMessage(); }
         if (steps.isEmpty()) return "Nothing to run. Example: `walk 3; jump; run 2`";
+        if (Minecraft.getInstance().player == null) return "Join a world first, a script needs a player to control";
         final List<Step> s = steps;
         Minecraft.getInstance().execute(() -> {
             finish();
@@ -225,7 +226,7 @@ final class Scripts {
 
     static synchronized String list() {
         load();
-        if (saved.isEmpty()) return "No saved scripts yet. Use `!savescript <name> <steps>`";
+        if (saved.isEmpty()) return "No saved scripts yet. Use `/savescript`";
         StringBuilder sb = new StringBuilder("**Scripts:**");
         for (var e : saved.entrySet()) sb.append("\n`").append(e.getKey()).append("`: ").append(e.getValue());
         return sb.toString();
