@@ -317,6 +317,67 @@ public class ToggleScreen extends Screen {
         return loadoutText();
     }
 
+    // ---- Discord !players / !waypoints / !mark ----
+    /** Online players from the tab list. Call on the game thread. */
+    static String playersText() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.getConnection() == null) return "Not in a world or server right now";
+        List<String> names = new ArrayList<>();
+        for (PlayerInfo i : mc.getConnection().getOnlinePlayers()) names.add(i.getProfile().name());
+        names.sort(String.CASE_INSENSITIVE_ORDER);
+        if (names.isEmpty()) return "No players online";
+        return "**Players online (" + names.size() + "):** " + String.join(", ", names);
+    }
+
+    private static Path waypointPath() { return FabricLoader.getInstance().getConfigDir().resolve("trim-studio-waypoints.txt"); }
+
+    /** Each line: name TAB x TAB y TAB z TAB dimension. */
+    private static List<String[]> loadWaypoints() {
+        List<String[]> out = new ArrayList<>();
+        try {
+            if (!Files.exists(waypointPath())) return out;
+            for (String line : Files.readAllLines(waypointPath())) {
+                String[] t = line.split("\t");
+                if (t.length >= 5) out.add(t);
+            }
+        } catch (Exception e) {
+            PackTogglesClient.LOG.warn("Could not read waypoints", e);
+        }
+        return out;
+    }
+
+    static String waypointsText() {
+        List<String[]> l = loadWaypoints();
+        if (l.isEmpty()) return "No waypoints yet. Use `!mark <name>` while in game.";
+        StringBuilder sb = new StringBuilder("**Waypoints (" + l.size() + "):**");
+        for (String[] w : l) sb.append("\n").append(w[0]).append(": ").append(w[1]).append(" ").append(w[2]).append(" ").append(w[3]).append(" (").append(w[4]).append(")");
+        return sb.toString();
+    }
+
+    /** Saves the player's current position as a waypoint. Call on the game thread. */
+    static String markHere(String name) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null || mc.level == null) return "Join a world first";
+        List<String[]> l = loadWaypoints();
+        if (l.size() >= 100) return "Waypoint list is full (100)";
+        String n = name == null ? "" : name.replaceAll("[\\t\\r\\n]+", " ").trim();
+        if (n.length() > 32) n = n.substring(0, 32);
+        if (n.isEmpty()) n = "Waypoint " + (l.size() + 1);
+        String dim = mc.level.dimension().toString();
+        int slash = dim.indexOf("/ ");
+        if (slash >= 0) dim = dim.substring(slash + 2).replace("]", "").trim();
+        long x = Math.round(mc.player.getX()), y = Math.round(mc.player.getY()), z = Math.round(mc.player.getZ());
+        l.add(new String[]{n, "" + x, "" + y, "" + z, dim});
+        try {
+            List<String> lines = new ArrayList<>();
+            for (String[] w : l) lines.add(String.join("\t", w));
+            Files.write(waypointPath(), lines);
+        } catch (Exception e) {
+            return "Could not save the waypoint: " + e.getMessage();
+        }
+        return "Marked **" + n + "** at " + x + " " + y + " " + z + " (" + dim + ")";
+    }
+
     /** The skin currently shown on the Skin tab, recolor included. */
     static byte[] skinPng() {
         try {
