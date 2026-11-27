@@ -1,32 +1,2735 @@
 package dev.packtoggles;
 
-import java.util.List;
+import com.mojang.authlib.GameProfile;
+import com.mojang.blaze3d.platform.NativeImage;
+import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.ChatFormatting;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.components.PlayerFaceRenderer;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.inventory.InventoryScreen;
+import net.minecraft.client.input.KeyEvent;
+import net.minecraft.client.input.MouseButtonEvent;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.multiplayer.PlayerInfo;
+import net.minecraft.client.player.RemotePlayer;
+import net.minecraft.client.renderer.RenderPipelines;
+import net.minecraft.client.renderer.texture.DynamicTexture;
+import net.minecraft.client.renderer.texture.TextureManager;
+import net.minecraft.client.resources.DefaultPlayerSkin;
+import net.minecraft.core.Holder;
+import net.minecraft.core.HolderLookup;
+import net.minecraft.core.component.DataComponents;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.Style;
+import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.util.FormattedCharSequence;
+import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.player.PlayerSkin;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.item.equipment.trim.ArmorTrim;
+import net.minecraft.world.item.equipment.trim.TrimMaterial;
+import net.minecraft.world.item.equipment.trim.TrimPattern;
+import org.lwjgl.glfw.GLFW;
 
-/** A colour scheme plus the particle scene that plays behind the panel. */
-public record Theme(String id, String name, String sub, int accent, int accent2, int bg, int card, int line, Kind kind) {
-    public enum Kind { EMBER, STARS, DIGITAL, SNOW, PETAL, GOLD, BUBBLES, GRID, VOID, RAIN, FOG, FIREFLY }
+import javax.imageio.ImageIO;
+import java.awt.Color;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.text.SimpleDateFormat;
+import java.util.*;
+import java.util.function.Consumer;
+import java.util.stream.Stream;
 
-    private static Theme t(String id, String name, String sub, int a, int a2, int bg, int card, int line, Kind k) {
-        return new Theme(id, name, sub, 0xFF000000 | a, 0xFF000000 | a2, 0xFF000000 | bg, 0xFF000000 | card, 0xFF000000 | line, k);
+/**
+ * Trim Studio: 3D armor-trim preview, saved loadouts (Wardrobe), a skin library with a recolor tool, a Discord bot
+ * and settings. Everything is drawn by hand in render(); vanilla Buttons are transparent click areas. Mouse dragging
+ * (sliders, preview rotation) is polled each frame. Skin previews, the head zoom and the skin list thumbnails are
+ * small dynamic textures, so the skin tab costs a handful of draw calls.
+ */
+public class ToggleScreen extends Screen {
+    private static final int TEXT = 0xFFF5E8DD, GREEN = 0xFF58D26F, RED = 0xFFE0564F, AMBER = 0xFFF0B429;
+    private static final String[] TABS = {"Trims", "Wardrobe", "Skin", "Discord", "Cape", "Players", "Stats", "Waypoints", "Training", "Settings", "Snake"};
+    private static final int T_TRIMS = 0, T_WARDROBE = 1, T_SKIN = 2, T_DISCORD = 3, T_CAPE = 4, T_PLAYERS = 5, T_STATS = 6, T_WAYPOINTS = 7, T_TRAIN = 8, T_SETTINGS = 9, T_SNAKE = 10;
+    private static final String[] INTENSITY = {"Low", "Medium", "High"};
+    private static final String[] SET_CHIPS = {"Layout", "Theme", "Display", "Colors"};
+    private static final String[] SPEED = {"Slow", "Normal", "Fast"};
+    private static final float[] SPEED_MUL = {0.6f, 1f, 1.5f};
+    private static final String[] STYLE = {"Solid", "Soft", "Glass"};
+    private static final float[] STYLE_A = {1f, 0.88f, 0.7f};
+    private static final String[] GLOWS = {"Soft", "Strong"};
+
+    // layouts
+    private static final int L_CLASSIC = 0, L_RAIL = 1, L_TABS = 2, L_DOCK = 3, L_RADIAL = 4;
+    private static final String[] LAYOUTS = {"Classic", "Rail", "Tabs", "Dock", "Radial"};
+    private static final String[] LAYOUT_SUB = {"Sidebar with labels", "Slim icon rail", "Pill tabs across the top",
+            "Magnifying dock at the bottom", "Wheel menu, Tab to open"};
+
+    // trims data
+    private static final String[] PATTERNS = {"Sentry", "Dune", "Coast", "Wild", "Ward", "Eye", "Vex", "Tide", "Snout",
+            "Rib", "Spire", "Wayfinder", "Shaper", "Silence", "Raiser", "Host", "Flow", "Bolt"};
+    private static final String[] MATS = {"Quartz", "Iron", "Netherite", "Redstone", "Copper", "Gold",
+            "Emerald", "Diamond", "Lapis", "Amethyst", "Resin"};
+    private static final int[] MAT_COL = {0xFFE3D4C4, 0xFFCECACA, 0xFF625859, 0xFF971607, 0xFFB4684D, 0xFFDEB12D,
+            0xFF11A036, 0xFF6EECD2, 0xFF416E97, 0xFF9A5CC6, 0xFFFC7812};
+    private static final String[] ARMOR_NAMES = {"Leather", "Chainmail", "Iron", "Gold", "Diamond", "Netherite"};
+    private static final String[] ARMOR_IDS = {"leather", "chainmail", "iron", "golden", "diamond", "netherite"};
+    private static final String[] PIECE_NAMES = {"Helmet", "Chest", "Legs", "Boots", "Showcase", "Random"};
+    private static final EquipmentSlot[] SLOTS = {EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET};
+
+    // skin data: boxes are {u, v, w, h, d} of the standard player skin unwrap (used by the starter template)
+    private static final int[][] BOXES = {
+            {0, 0, 8, 8, 8}, {16, 16, 8, 12, 4}, {40, 16, 4, 12, 4}, {0, 16, 4, 12, 4}, {32, 48, 4, 12, 4}, {16, 48, 4, 12, 4},
+            {32, 0, 8, 8, 8}, {16, 32, 8, 12, 4}, {40, 32, 4, 12, 4}, {48, 48, 4, 12, 4}, {0, 32, 4, 12, 4}, {0, 48, 4, 12, 4}};
+    // preview parts: {dstX, dstY, w, h, baseU, baseV, overlayU, overlayV}
+    private static final int[][] FRONT = {
+            {4, 0, 8, 8, 8, 8, 40, 8}, {4, 8, 8, 12, 20, 20, 20, 36}, {0, 8, 4, 12, 44, 20, 44, 36},
+            {12, 8, 4, 12, 36, 52, 52, 52}, {4, 20, 4, 12, 4, 20, 4, 36}, {8, 20, 4, 12, 20, 52, 4, 52}};
+    private static final int[][] BACK = {
+            {4, 0, 8, 8, 24, 8, 56, 8}, {4, 8, 8, 12, 32, 20, 32, 36}, {0, 8, 4, 12, 44, 52, 60, 52},
+            {12, 8, 4, 12, 52, 20, 52, 36}, {4, 20, 4, 12, 28, 52, 12, 52}, {8, 20, 4, 12, 12, 20, 12, 36}};
+
+    // recolor sliders: hue shift (degrees), saturation (%), lightness (+/-), tolerance for "Picked color"
+    private static final String[] RC_NAMES = {"Hue", "Sat", "Light", "Tol"};
+    private static final int[] RC_MIN = {-180, 0, -100, 0}, RC_MAX = {180, 200, 100, 100};
+    private static final String[] SKIN_BTNS = {"Reset", "Save copy", "Refresh", "Open folder", "To Discord", "Template"};
+    private static final int HEAD_Z = 6;
+
+    /** One PNG from the skin-studio folder. px is null when the file is not a valid skin. */
+    private record SkinFile(Path path, String name, int[] px) { }
+
+    // session + saved state
+    private static int layout = L_RAIL;
+    private static int armorType = 5, material = 0, pattern = 0;
+    private static final boolean[] pieceOn = {true, true, true, true};
+    private static boolean showcase = false, sway = true, followCursor = false, glowStrong = false;
+    private static int speedIdx = 1, styleIdx = 0;
+    private static boolean customOn = false;
+    private static int customAccent = 0xFFF2762B, customAccent2 = 0xFFFFB347;
+    private static float viewYaw = 0.35f;
+    private static boolean skinDirty = false, skinChanged = true, equipDirty = true;
+    private static final List<String> wardrobe = new ArrayList<>();
+    private static final boolean ESSENTIAL = FabricLoader.getInstance().isModLoaded("essential");
+    private static boolean prefsLoaded = false;
+
+    // skin library state (static so the Discord bot's !skin sees it even when the screen is closed)
+    private static int[] source = null, canvas = null;
+    private static String skinName = "Starter template";
+    private static final int[] rc = {0, 100, 0, 30};
+    private static boolean pickMode = false;
+    private static int pickColor = 0xFFC68863;
+    private static final List<SkinFile> files = new ArrayList<>();
+    private static boolean filesLoaded = false;
+    private static int selIdx = -1, sPage = 0;
+
+    private final Screen parent;
+    private final FX fx = new FX();
+    private final Map<String, Float> eased = new HashMap<>();
+    private final Map<String, Button> hits = new HashMap<>();
+    private int tab = 0, setChip = 0, wPage = 0;
+    private float openT = 0, tabT = 1;
+    private int tabDir = 1;
+    private float selX = Float.NaN, selY = 0, selVX = 0, selVY = 0;
+    private long lastNanos = System.nanoTime();
+    private float dt = 0.016f, time = 0, partialTick = 0;
+    private Component status = Component.empty();
+    private Theme theme = Theme.byId(Config.theme);
+    private int cAccent, cAccent2, cBg, cCard, cLine;
+    private boolean colorsInit = false;
+
+    // text fields
+    private EditBox search, tokenBox, chanBox, userBox, chatBox, chatChanBox;
+    private int discPage = 0;   // 0 = bot, 1 = chat (both live on the Discord tab)
+    private String chatText = "";
+    private final List<EditBox> fields = new ArrayList<>();
+    private String searchText = "";
+    private boolean searchActive = false, building = false, dirty = false, refocus = false;
+    private boolean radialOpen = false;
+
+    // layout
+    private int px, py, pw, ph, cx, cw, top, bottom, baseCx;
+    private int tabStep = 34, tabH = 28;
+    private int applyX, applyY, applyW = 150, applyH = 24;
+    private int closeX, nameX, nameW, stX, stW, searchX, searchW;
+
+    // trims tab
+    private RemotePlayer dummy;
+    private boolean worldMissing = false;
+    private float showTimer = 0;
+    private int[] prevBox = new int[4];
+    private boolean prevDrag = false;
+    private int lastMx = 0;
+    private final List<int[]> rArmor = new ArrayList<>(), rPiece = new ArrayList<>(), rMat = new ArrayList<>(), rPat = new ArrayList<>();
+    private final List<Integer> patIdx = new ArrayList<>();
+    private int yLA, yLB, yLC, yLD;
+
+    // skin tab
+    private int sListW = 140, sRows = 1, pvX, ctlX, ctlW, pvScale = 3;
+    private boolean wasPressed = false;
+    /** Tracked from our own mouse events: MouseHandler.isLeftPressed() is not updated while a screen is open, which broke the editors. */
+    private boolean mouseLeft = false, mouseRight = false;
+
+    @Override
+    public boolean mouseClicked(MouseButtonEvent e, boolean dbl) {
+        if (e.button() == 0) mouseLeft = true; else if (e.button() == 1) mouseRight = true;
+        return super.mouseClicked(e, dbl);
     }
 
-    public static final List<Theme> ALL = List.of(
-        t("inferno", "Inferno", "Flames and embers", 0xF08A24, 0xFFC27A, 0x170D0A, 0x24150F, 0x3A2218, Kind.EMBER),
-        t("midnight", "Midnight", "Aurora and shooting stars", 0x6C7BFF, 0x2FD0FF, 0x0B0E1F, 0x141934, 0x232B55, Kind.STARS),
-        t("emerald", "Emerald", "Digital rain and decode", 0x2ED573, 0xA6FF7A, 0x07140E, 0x0E241A, 0x17402C, Kind.DIGITAL),
-        t("frost", "Frost", "Ice crystals and snow", 0x5BC8FF, 0xE6F7FF, 0x0A1420, 0x112133, 0x1D3A55, Kind.SNOW),
-        t("sakura", "Sakura", "Blossoms and petals", 0xFF7AB6, 0xFFC1DD, 0x1D0D18, 0x2B1424, 0x4A2340, Kind.PETAL),
-        t("gold", "Luxe Gold", "Art deco gold shimmer", 0xF5C542, 0xFFE9A0, 0x15110A, 0x241C0E, 0x453615, Kind.GOLD),
-        t("abyss", "Abyss", "Light rays and bubbles", 0x2D9CFF, 0x29E0D0, 0x06121F, 0x0C2036, 0x123456, Kind.BUBBLES),
-        t("synthwave", "Synthwave", "Neon grid and sunset", 0xFF3EA5, 0x2FE6FF, 0x120A24, 0x1E1238, 0x3A2268, Kind.GRID),
-        t("nebula", "Nebula", "Spiral galaxy and stardust", 0xA66BFF, 0xFF7BD5, 0x100A1F, 0x1B1233, 0x33235C, Kind.VOID),
-        t("thunder", "Thunder", "Rain and lightning strikes", 0x8FB2E8, 0xFFE45E, 0x0C111B, 0x151D2D, 0x26354F, Kind.RAIN),
-        t("bloodmoon", "Blood Moon", "A red moon and drifting fog", 0xE0453F, 0xFF8A5E, 0x1A0809, 0x2A1113, 0x4A1D20, Kind.FOG),
-        t("firefly", "Firefly Forest", "Fireflies in the moonlight", 0xB5E04C, 0xFFE27A, 0x0A150B, 0x12230F, 0x213D1B, Kind.FIREFLY)
-    );
+    @Override
+    public boolean mouseReleased(MouseButtonEvent e) {
+        if (e.button() == 0) mouseLeft = false; else if (e.button() == 1) mouseRight = false;
+        return super.mouseReleased(e);
+    }
+    private int sliderDrag = -1;
+    private final DynamicTexture[] pvTex = new DynamicTexture[2];
+    private final NativeImage[] pvImg = new NativeImage[2];
+    private final Identifier[] pvId = new Identifier[2];
+    private int pvSize = 0;
+    private DynamicTexture headTex, thumbTex;
+    private NativeImage headImg, thumbImg;
+    private Identifier headId, thumbId;
+    private int thumbN = 0;
+    private boolean texDirty = true, thumbsDirty = true;
 
-    public static Theme byId(String id) {
-        for (Theme t : ALL) if (t.id().equals(id)) return t;
-        return ALL.get(0);
+    // wardrobe tab
+    private int wRows = 1;
+
+    public ToggleScreen(Screen parent) {
+        super(Component.translatable("screen.packtoggles.title"));
+        this.parent = parent;
+        loadPrefs();
+        PackTogglesClient.LOG.info("[Trim Studio] screen opened: build 3.1.0, layout={}, essential={}", LAYOUTS[layout], ESSENTIAL);
+        ensureSkin();
+    }
+
+    private static void ensureSkin() {
+        if (source == null) { source = new int[64 * 64]; template(source); }
+        if (canvas == null) recolor();
+    }
+
+    // ---------------- saved settings ----------------
+    private static Path prefsPath() { return FabricLoader.getInstance().getConfigDir().resolve("trim-studio.properties"); }
+
+    private static int geti(Properties p, String k, int d) {
+        try { return Integer.parseInt(p.getProperty(k, "" + d).trim()); } catch (Exception e) { return d; }
+    }
+
+    private static boolean getb(Properties p, String k, boolean d) { return Boolean.parseBoolean(p.getProperty(k, "" + d).trim()); }
+
+    private static int clampi(int v, int lo, int hi) { return Math.max(lo, Math.min(hi, v)); }
+
+    static void loadPrefs() {
+        if (prefsLoaded) return;
+        prefsLoaded = true;
+        Properties p = new Properties();
+        try (InputStream in = Files.newInputStream(prefsPath())) { p.load(in); } catch (Exception e) { return; }
+        layout = clampi(geti(p, "layout", layout), 0, 4);
+        armorType = clampi(geti(p, "armor", armorType), 0, ARMOR_NAMES.length - 1);
+        material = clampi(geti(p, "material", material), 0, MATS.length - 1);
+        pattern = clampi(geti(p, "pattern", pattern), 0, PATTERNS.length - 1);
+        String pcs = p.getProperty("pieces", "1111");
+        for (int i = 0; i < 4; i++) pieceOn[i] = pcs.length() <= i || pcs.charAt(i) == '1';
+        sway = getb(p, "sway", sway);
+        followCursor = getb(p, "follow", followCursor);
+        glowStrong = getb(p, "glowStrong", glowStrong);
+        speedIdx = clampi(geti(p, "speed", speedIdx), 0, 2);
+        styleIdx = clampi(geti(p, "style", styleIdx), 0, 2);
+        customOn = getb(p, "customOn", customOn);
+        customAccent = 0xFF000000 | geti(p, "accent", customAccent);
+        customAccent2 = 0xFF000000 | geti(p, "accent2", customAccent2);
+        rc[3] = clampi(geti(p, "skin.tolerance", rc[3]), 0, 100);
+        DiscordBot.token = p.getProperty("dc.token", "");
+        DiscordBot.channelId = p.getProperty("dc.channel", "");
+        DiscordBot.userId = p.getProperty("dc.user", "");
+        DiscordBot.listen = getb(p, "dc.listen", true);
+        DiscordBot.autoPost = getb(p, "dc.autopost", false);
+        DiscordBot.relay = getb(p, "dc.relay", false);
+        DiscordBot.chatChannelId = p.getProperty("dc.chatchannel", "");
+        DiscordBot.logChat = getb(p, "dc.logchat", false);
+        DiscordBot.hourly = getb(p, "dc.hourly", false);
+        DiscordBot.sayOn = getb(p, "dc.say", true);
+        DiscordBot.chatEmbeds = getb(p, "dc.embeds", true);
+        wardrobe.clear();
+        for (String s : p.getProperty("wardrobe", "").split(";")) if (!s.isBlank() && entry(s) != null) wardrobe.add(s);
+    }
+
+    static void savePrefs() {
+        Properties p = new Properties();
+        p.setProperty("layout", "" + layout);
+        p.setProperty("armor", "" + armorType);
+        p.setProperty("material", "" + material);
+        p.setProperty("pattern", "" + pattern);
+        StringBuilder pcs = new StringBuilder();
+        for (boolean b : pieceOn) pcs.append(b ? '1' : '0');
+        p.setProperty("pieces", pcs.toString());
+        p.setProperty("sway", "" + sway);
+        p.setProperty("follow", "" + followCursor);
+        p.setProperty("glowStrong", "" + glowStrong);
+        p.setProperty("speed", "" + speedIdx);
+        p.setProperty("style", "" + styleIdx);
+        p.setProperty("customOn", "" + customOn);
+        p.setProperty("accent", "" + (customAccent & 0xFFFFFF));
+        p.setProperty("accent2", "" + (customAccent2 & 0xFFFFFF));
+        p.setProperty("skin.tolerance", "" + rc[3]);
+        p.setProperty("dc.token", DiscordBot.token);
+        p.setProperty("dc.channel", DiscordBot.channelId);
+        p.setProperty("dc.user", DiscordBot.userId);
+        p.setProperty("dc.listen", "" + DiscordBot.listen);
+        p.setProperty("dc.autopost", "" + DiscordBot.autoPost);
+        p.setProperty("dc.relay", "" + DiscordBot.relay);
+        p.setProperty("dc.chatchannel", DiscordBot.chatChannelId);
+        p.setProperty("dc.logchat", "" + DiscordBot.logChat);
+        p.setProperty("dc.hourly", "" + DiscordBot.hourly);
+        p.setProperty("dc.say", "" + DiscordBot.sayOn);
+        p.setProperty("dc.embeds", "" + DiscordBot.chatEmbeds);
+        p.setProperty("wardrobe", String.join(";", wardrobe));
+        try (OutputStream out = Files.newOutputStream(prefsPath())) { p.store(out, "Trim Studio settings (contains your Discord bot token, keep private)"); }
+        catch (Exception e) { PackTogglesClient.LOG.warn("Could not save Trim Studio settings", e); }
+    }
+
+    // ---------------- shared logic (also used by the Discord bot) ----------------
+    /** Text list for Discord !players: name, ping, health and voice chat state. */
+    static String playersText() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.getConnection() == null) return "Not in a world right now";
+        List<PlayerInfo> all = new ArrayList<>(mc.getConnection().getOnlinePlayers());
+        all.sort(Comparator.comparing(p -> p.getProfile().name().toLowerCase(Locale.ROOT)));
+        StringBuilder sb = new StringBuilder("**Players online (" + all.size() + ")**\n");
+        for (PlayerInfo p : all) {
+            if (sb.length() > 1700) { sb.append("...and more"); break; }
+            sb.append("- ").append(p.getProfile().name().replace("_", "\\_"));
+            if (p.getLatency() > 0) sb.append("  ").append(p.getLatency()).append(" ms");
+            var pl = mc.level != null ? mc.level.getPlayerByUUID(p.getProfile().id()) : null;
+            if (pl != null) sb.append("  \u2764 ").append(Math.round(pl.getHealth()));
+            VoiceStatus.State v = VoiceStatus.of(p.getProfile().id());
+            if (v != VoiceStatus.State.UNKNOWN && v != VoiceStatus.State.NO_MOD) sb.append("  \uD83C\uDFA4 ").append(v.label);
+            sb.append('\n');
+        }
+        return sb.toString();
+    }
+
+
+    static String giveCommand() {
+        return "/give @s " + ARMOR_IDS[armorType] + "_chestplate[trim={pattern:\"" + PATTERNS[pattern].toLowerCase(Locale.ROOT)
+                + "\",material:\"" + MATS[material].toLowerCase(Locale.ROOT) + "\"}]";
+    }
+
+    static String loadoutText() {
+        return "**" + ARMOR_NAMES[armorType] + "** armor with the **" + PATTERNS[pattern] + "** trim in **" + MATS[material] + "**\n`" + giveCommand() + "`";
+    }
+
+    static String randomTrim() {
+        Random r = new Random();
+        armorType = r.nextInt(ARMOR_NAMES.length);
+        material = r.nextInt(MATS.length);
+        pattern = r.nextInt(PATTERNS.length);
+        equipDirty = true;
+        return loadoutText();
+    }
+
+    static String setLoadout(String args) {
+        int a = -1, m = -1, p = -1;
+        for (String w : args.toLowerCase(Locale.ROOT).trim().split("\\s+")) {
+            for (int i = 0; i < ARMOR_NAMES.length; i++) if (w.equals(ARMOR_NAMES[i].toLowerCase(Locale.ROOT)) || w.equals(ARMOR_IDS[i])) a = i;
+            for (int i = 0; i < PATTERNS.length; i++) if (w.equals(PATTERNS[i].toLowerCase(Locale.ROOT))) p = i;
+            for (int i = 0; i < MATS.length; i++) if (w.equals(MATS[i].toLowerCase(Locale.ROOT))) m = i;
+        }
+        if (a < 0 && m < 0 && p < 0) return "Usage: `!set <armor> <pattern> <material>`, for example `!set diamond wild gold`";
+        if (a >= 0) armorType = a;
+        if (m >= 0) material = m;
+        if (p >= 0) pattern = p;
+        equipDirty = true;
+        return loadoutText();
+    }
+
+    /** The skin currently shown on the Skin tab, recolor included. */
+    static byte[] skinPng() {
+        try {
+            ensureSkin();
+            BufferedImage img = new BufferedImage(64, 64, BufferedImage.TYPE_INT_ARGB);
+            for (int i = 0; i < canvas.length; i++) img.setRGB(i % 64, i / 64, canvas[i]);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            ImageIO.write(img, "png", out);
+            return out.toByteArray();
+        } catch (Exception e) {
+            return new byte[0];
+        }
+    }
+
+    private static int[] entry(String s) {
+        try {
+            String[] t = s.split(",");
+            int[] e = {Integer.parseInt(t[0]), Integer.parseInt(t[1]), Integer.parseInt(t[2]), Integer.parseInt(t[3])};
+            if (e[0] < 0 || e[0] >= ARMOR_NAMES.length || e[1] < 0 || e[1] >= MATS.length || e[2] < 0 || e[2] >= PATTERNS.length) return null;
+            return e;
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
+    // ---------------- helpers ----------------
+    private float ease(String key, float target, float speed) {
+        float v = eased.getOrDefault(key, target);
+        v += (target - v) * Math.min(1f, dt * speed);
+        eased.put(key, v);
+        return v;
+    }
+
+    private static float eo(float t) {
+        t = Math.max(0f, Math.min(1f, t));
+        float u = 1f - t;
+        return 1f - u * u * u;
+    }
+
+    private float stag(int i) { return eo((tabT - Math.min(i, 12) * 0.04f) / 0.55f); }
+
+    private void restartEntrance(int dir) { tabT = 0; tabDir = dir; }
+
+    private static int mix(int a, int b, float t) {
+        t = Math.max(0, Math.min(1, t));
+        int ar = a >> 16 & 255, ag = a >> 8 & 255, ab = a & 255, br = b >> 16 & 255, bg = b >> 8 & 255, bb = b & 255;
+        return 0xFF000000 | ((int) (ar + (br - ar) * t) << 16) | ((int) (ag + (bg - ag) * t) << 8) | (int) (ab + (bb - ab) * t);
+    }
+
+    private static int alpha(int rgb, float a) {
+        return ((int) (Math.max(0, Math.min(1, a)) * 255) << 24) | (rgb & 0xFFFFFF);
+    }
+
+    private static int lum(int c) { return ((c >> 16 & 255) * 299 + (c >> 8 & 255) * 587 + (c & 255) * 114) / 1000; }
+
+    /** Standard "source over destination" blend for ARGB ints. */
+    private static int over(int d, int s) {
+        int sa = s >>> 24;
+        if (sa == 0) return d;
+        if (sa == 255) return s;
+        int da = d >>> 24;
+        if (da == 0) return s;
+        float a = sa / 255f, ba = da / 255f, oa = a + ba * (1 - a);
+        int r = Math.round(((s >> 16 & 255) * a + (d >> 16 & 255) * ba * (1 - a)) / oa);
+        int g = Math.round(((s >> 8 & 255) * a + (d >> 8 & 255) * ba * (1 - a)) / oa);
+        int b = Math.round(((s & 255) * a + (d & 255) * ba * (1 - a)) / oa);
+        return (Math.round(oa * 255) << 24) | (r << 16) | (g << 8) | b;
+    }
+
+    private static void round(GuiGraphics g, int x, int y, int w, int h, int c) {
+        g.fill(x + 2, y, x + w - 2, y + h, c);
+        g.fill(x + 1, y + 1, x + w - 1, y + h - 1, c);
+        g.fill(x, y + 2, x + w, y + h - 2, c);
+    }
+
+    private static void disc(GuiGraphics g, int x, int y, int r, int c) {
+        for (int dy = -r; dy <= r; dy++) {
+            int dx = (int) Math.sqrt(r * r - dy * dy);
+            g.fill(x - dx, y + dy, x + dx + 1, y + dy + 1, c);
+        }
+    }
+
+    private void text(GuiGraphics g, String s, int x, int y, int c) { g.drawString(font, s, x, y, c, false); }
+
+    private void bold(GuiGraphics g, String s, int x, int y, int c) {
+        g.drawString(font, Component.literal(s).withStyle(ChatFormatting.BOLD), x, y, c, false);
+    }
+
+    private String fit(String s, int maxPx) {
+        if (font.width(s) <= maxPx) return s;
+        while (s.length() > 1 && font.width(s + "..") > maxPx) s = s.substring(0, s.length() - 1);
+        return s + "..";
+    }
+
+    private int muted() { return mix(TEXT, cBg, 0.5f); }
+
+    private void card(GuiGraphics g, int x, int y, int w, int h) {
+        round(g, x, y, w, h, cLine);
+        round(g, x + 1, y + 1, w - 2, h - 2, cCard);
+    }
+
+    private void toggleSwitch(GuiGraphics g, int x, int y, float sw) {
+        round(g, x, y, 26, 12, mix(mix(cCard, TEXT, 0.15f), cAccent, sw));
+        round(g, x + 1 + (int) (14 * sw), y + 1, 10, 10, 0xFFFFFFFF);
+    }
+
+    private boolean hov(String key) { Button b = hits.get(key); return b != null && b.isHoveredOrFocused(); }
+
+    private void hit(String key, int x, int y, int w, int h, Runnable r) {
+        Button b = Button.builder(Component.empty(), btn -> r.run()).bounds(x, y, w, h).build();
+        b.setAlpha(0f);
+        addRenderableWidget(b);
+        hits.put(key, b);
+    }
+
+    private void chip(GuiGraphics g, String key, int[] r, String label, float sel, int selCol) {
+        float hv = ease("h" + key, hov(key) ? 1 : 0, 14);
+        float sv = ease("s" + key, sel, 14);
+        round(g, r[0], r[1], r[2], r[3], mix(mix(cCard, TEXT, 0.06f + 0.06f * hv), selCol, 0.9f * sv));
+        int fg = sv > 0.5f ? (lum(selCol) > 140 ? 0xFF111111 : 0xFFFFFFFF) : TEXT;
+        text(g, label, r[0] + (r[2] - font.width(label)) / 2, r[1] + (r[3] - 8) / 2, fg);
+    }
+
+    private void setTab(int t) {
+        radialOpen = false;
+        if (t == tab) { init(); return; }
+        restartEntrance(t > tab ? 1 : -1);
+        tab = t;
+        init();
+    }
+
+    private void setLayout(int l) {
+        layout = ((l % LAYOUTS.length) + LAYOUTS.length) % LAYOUTS.length;
+        radialOpen = false;
+        selX = Float.NaN;
+        restartEntrance(1);
+        init();
+    }
+
+    private String pillLabel() { return skinDirty ? "Unsaved skin" : DiscordBot.isRunning() ? "Bot online" : "Ready"; }
+
+    private int pillColor() { return skinDirty ? AMBER : GREEN; }
+
+    private boolean anyTyping() {
+        if (search != null && search.isFocused()) return true;
+        for (EditBox b : fields) if (b.isFocused()) return true;
+        return false;
+    }
+
+    // ---------------- navigation geometry ----------------
+    private int[] navRect(int i) {
+        switch (layout) {
+            case L_CLASSIC:
+                return new int[]{px + 8, py + 44 + i * tabStep, 104, tabH};
+            case L_TABS: {
+                int x = px + 10;
+                for (int k = 0; k < i; k++) x += font.width(TABS[k]) + 16 + 4;
+                return new int[]{x, py + 34, font.width(TABS[i]) + 16, 20};
+            }
+            default:
+                return new int[]{px + 8, py + 44 + i * tabStep, 34, tabH};
+        }
+    }
+
+    private int dockX(int i) { return px + (pw - (TABS.length * 38 - 8)) / 2 + i * 38; }
+
+    private int dockY() { return py + ph - 8 - 30; }
+
+    private int[] wheelPos(int i) {
+        int ccx = cx + cw / 2, ccy = top + (bottom - top) / 2;
+        int r = Math.max(30, Math.min(70, (bottom - top) / 2 - 26));
+        double a = -Math.PI / 2 + i * 2 * Math.PI / TABS.length;
+        return new int[]{ccx + (int) Math.round(r * Math.cos(a)), ccy + (int) Math.round(r * Math.sin(a))};
+    }
+
+    // ---------------- layout / click areas ----------------
+    @Override
+    protected void init() {
+        clearWidgets();
+        hits.clear();
+        fields.clear();
+        search = null;
+        tokenBox = chanBox = userBox = chatBox = chatChanBox = null;
+        searchActive = false;
+        pw = Math.min(width - 24, 560);
+        ph = Math.min(height - 16, 340);
+        px = (width - pw) / 2;
+        py = (height - ph) / 2;
+        switch (layout) {
+            case L_CLASSIC -> { cx = px + 120; cw = pw - 128; top = py + 34; }
+            case L_TABS -> { cx = px + 10; cw = pw - 20; top = py + 60; }
+            case L_RAIL -> { cx = px + 52; cw = pw - 60; top = py + 34; }
+            default -> { cx = px + 10; cw = pw - 20; top = py + 34; }
+        }
+        baseCx = cx;
+        applyY = py + ph - 8 - applyH - (layout == L_DOCK ? 38 : 0);
+        applyX = cx + cw - applyW;
+        bottom = applyY - 8;
+
+        tabStep = Math.max(22, Math.min(34, (ph - 44 - 12 - (layout == L_CLASSIC ? 44 : 0)) / TABS.length));
+        tabH = Math.min(28, tabStep - 4);
+
+        if (layout == L_DOCK) {
+            for (int i = 0; i < TABS.length; i++) {
+                final int idx = i;
+                hit("tab" + i, dockX(i), dockY(), 30, 30, () -> setTab(idx));
+            }
+        } else if (layout == L_RADIAL) {
+            hit("menu", px + 8, py + 8, 20, 20, () -> { radialOpen = !radialOpen; init(); });
+            if (radialOpen) {
+                for (int i = 0; i < TABS.length; i++) {
+                    final int idx = i;
+                    int[] p = wheelPos(i);
+                    hit("tab" + i, p[0] - 17, p[1] - 17, 34, 34, () -> setTab(idx));
+                }
+            }
+        } else {
+            for (int i = 0; i < TABS.length; i++) {
+                final int idx = i;
+                int[] r = navRect(i);
+                hit("tab" + i, r[0], r[1], r[2], r[3], () -> setTab(idx));
+            }
+        }
+
+        closeX = px + pw - 26;
+        String name = Minecraft.getInstance().getUser().getName();
+        nameW = font.width(name) + 16 + 22;
+        nameX = closeX - 8 - nameW;
+        stW = Math.max(font.width("Unsaved skin"), Math.max(font.width("Bot online"), font.width("Ready"))) + 26;
+        stX = nameX - 8 - stW;
+        searchW = Math.min(130, stX - 8 - (cx + (layout == L_RADIAL ? 26 : 0) + 96));
+        searchX = stX - 8 - searchW;
+        searchActive = searchW >= 70;
+        if (searchActive) {
+            search = new EditBox(font, searchX + 20, py + 13, searchW - 26, 12, Component.literal("Search"));
+            search.setBordered(false);
+            search.setMaxLength(32);
+            search.setHint(Component.literal("Search  Ctrl K").withStyle(ChatFormatting.DARK_GRAY));
+            building = true;
+            search.setValue(searchText);
+            building = false;
+            search.setResponder(s -> {
+                if (building) return;
+                searchText = s;
+                if (tab != T_TRIMS) { tab = T_TRIMS; restartEntrance(1); }
+                dirty = true;
+                refocus = true;
+            });
+            addWidget(search);
+        }
+
+        hit("close", closeX, py + 10, 16, 16, this::onClose);
+        hit("apply", applyX, applyY, applyW, applyH, this::doApply);
+
+        if (layout == L_RADIAL && radialOpen) return;
+        switch (tab) {
+            case T_TRIMS -> initTrims();
+            case T_WARDROBE -> initWardrobe();
+            case T_SKIN -> initSkin();
+            case T_DISCORD -> initDiscordTab();
+            case T_CAPE -> initCape();
+            case T_PLAYERS -> initPlayers();
+            case T_WAYPOINTS -> initWaypoints();
+            case T_SNAKE -> initSnake();
+            case T_TRAIN -> initTrain();
+            case T_SETTINGS -> initSettings();
+            default -> { }
+        }
+    }
+
+    // ---- trims tab layout ----
+    private int trimLeftW() { return Math.max(130, Math.min(210, cw * 2 / 5)); }
+
+    private int[] widths(String[] labels, int pad) {
+        int[] w = new int[labels.length];
+        for (int i = 0; i < labels.length; i++) w[i] = font.width(labels[i]) + pad;
+        return w;
+    }
+
+    private int flow(List<int[]> out, int[] ws, int x0, int y, int w, int h, int gap) {
+        out.clear();
+        int x = x0, yy = y;
+        for (int wd : ws) {
+            if (x + wd > x0 + w && x > x0) { x = x0; yy += h + gap; }
+            out.add(new int[]{x, yy, wd, h});
+            x += wd + gap;
+        }
+        return yy + h;
+    }
+
+    private void initTrims() {
+        int lw = trimLeftW(), x0 = cx + lw + 8, w = cw - lw - 8;
+        prevBox = new int[]{cx + 6, top + 6, cx + lw - 6, bottom - 34};
+        int y = top;
+        yLA = y; y += 11;
+        y = flow(rArmor, widths(ARMOR_NAMES, 10), x0, y, w, 16, 3) + 8;
+        yLB = y; y += 11;
+        y = flow(rPiece, widths(PIECE_NAMES, 10), x0, y, w, 16, 3) + 8;
+        yLC = y; y += 11;
+        int[] sq = new int[MATS.length];
+        Arrays.fill(sq, 16);
+        y = flow(rMat, sq, x0, y, w, 16, 3) + 8;
+        yLD = y; y += 11;
+        String q = searchText.trim().toLowerCase(Locale.ROOT);
+        patIdx.clear();
+        for (int i = 0; i < PATTERNS.length; i++) if (q.isEmpty() || PATTERNS[i].toLowerCase(Locale.ROOT).contains(q)) patIdx.add(i);
+        int[] pws = new int[patIdx.size()];
+        for (int k = 0; k < pws.length; k++) pws[k] = font.width(PATTERNS[patIdx.get(k)]) + 10;
+        flow(rPat, pws, x0, y, w, 16, 3);
+
+        for (int i = 0; i < rArmor.size(); i++) {
+            final int idx = i; int[] r = rArmor.get(i);
+            hit("arm" + i, r[0], r[1], r[2], r[3], () -> { armorType = idx; equipDirty = true; });
+        }
+        for (int i = 0; i < rPiece.size(); i++) {
+            final int idx = i; int[] r = rPiece.get(i);
+            hit("pc" + i, r[0], r[1], r[2], r[3], () -> {
+                if (idx < 4) { pieceOn[idx] = !pieceOn[idx]; equipDirty = true; }
+                else if (idx == 4) showcase = !showcase;
+                else { randomTrim(); status = Component.literal("Random: " + ARMOR_NAMES[armorType] + ", " + PATTERNS[pattern] + ", " + MATS[material]); }
+            });
+        }
+        for (int i = 0; i < rMat.size(); i++) {
+            final int idx = i; int[] r = rMat.get(i);
+            hit("mat" + i, r[0], r[1], r[2], r[3], () -> { material = idx; equipDirty = true; });
+        }
+        for (int k = 0; k < rPat.size(); k++) {
+            final int pi = patIdx.get(k); int[] r = rPat.get(k);
+            if (r[1] + r[3] > bottom) continue;
+            hit("pat" + k, r[0], r[1], r[2], r[3], () -> { pattern = pi; equipDirty = true; });
+        }
+    }
+
+    // ---- wardrobe tab layout ----
+    private void initWardrobe() {
+        wRows = Math.max(1, (bottom - top - 28) / 22);
+        int pages = Math.max(1, (wardrobe.size() + wRows - 1) / wRows);
+        wPage = Math.min(wPage, pages - 1);
+        hit("wsave", cx + 6, top, 104, 16, this::saveLoadout);
+        hit("wprev", cx + cw - 44, top, 18, 16, () -> { wPage = (wPage + pages - 1) % pages; restartEntrance(-1); init(); });
+        hit("wnext", cx + cw - 24, top, 18, 16, () -> { wPage = (wPage + 1) % pages; restartEntrance(1); init(); });
+        for (int i = 0; i < wRows; i++) {
+            final int idx = wPage * wRows + i;
+            if (idx >= wardrobe.size()) break;
+            hit("wrow" + i, cx + 6, top + 22 + i * 22, cw - 12 - 24, 20, () -> loadLoadout(idx));
+            hit("wdel" + i, cx + cw - 6 - 22, top + 22 + i * 22, 22, 20, () -> deleteLoadout(idx));
+        }
+    }
+
+    private void saveLoadout() {
+        if (wardrobe.size() >= 60) { status = Component.literal("Wardrobe is full (60 saved)"); return; }
+        int mask = 0;
+        for (int i = 0; i < 4; i++) if (pieceOn[i]) mask |= 1 << i;
+        wardrobe.add(armorType + "," + material + "," + pattern + "," + mask);
+        savePrefs();
+        status = Component.literal("Saved " + ARMOR_NAMES[armorType] + " " + PATTERNS[pattern] + " " + MATS[material]);
+        init();
+    }
+
+    private void loadLoadout(int idx) {
+        if (idx < 0 || idx >= wardrobe.size()) return;
+        int[] e = entry(wardrobe.get(idx));
+        if (e == null) return;
+        armorType = e[0]; material = e[1]; pattern = e[2];
+        for (int i = 0; i < 4; i++) pieceOn[i] = (e[3] >> i & 1) != 0;
+        equipDirty = true;
+        status = Component.literal("Loaded " + ARMOR_NAMES[armorType] + ", " + PATTERNS[pattern] + ", " + MATS[material] + " (open Trims to see it)");
+    }
+
+    private void deleteLoadout(int idx) {
+        if (idx < 0 || idx >= wardrobe.size()) return;
+        wardrobe.remove(idx);
+        savePrefs();
+        status = Component.literal("Removed from wardrobe");
+        init();
+    }
+
+    // ---- skin tab layout ----
+    private int ySlider(int i) { return top + 60 + i * 15; }
+
+    private int yMode() { return top + 122; }
+
+    private int yBtn() { return top + 144; }
+
+    /** Slider bar in base (unshifted) coordinates: {x, y, w, h}. */
+    private int[] skinBar(int i) { return new int[]{ctlX + 30, ySlider(i) + 1, Math.max(20, ctlW - 30 - 34), 8}; }
+
+    private void initSkin() {
+        if (paintOn) { initPaint(); return; }
+        if (!filesLoaded) refreshFiles(false);
+        int h = bottom - top;
+        sListW = Math.max(120, Math.min(170, cw / 3));
+        sRows = Math.max(1, (h - 26) / 20);
+        int pages = Math.max(1, (files.size() + sRows - 1) / sRows);
+        sPage = clampi(sPage, 0, pages - 1);
+        int rest = cw - sListW - 8;
+        pvScale = clampi((h - 24) / 32, 2, 4);
+        while (pvScale > 2 && rest - (2 * 16 * pvScale + 8 + 6) - 12 < 170) pvScale--;
+        pvX = cx + sListW + 8 + 3;
+        ctlX = pvX + 2 * 16 * pvScale + 8 + 3 + 12;
+        ctlW = cx + cw - ctlX - 2;
+        ensureTextures();
+
+        hit("sprev", cx + sListW - 46, top + 2, 18, 16, () -> { sPage = (sPage + pages - 1) % pages; restartEntrance(-1); init(); });
+        hit("snext", cx + sListW - 24, top + 2, 18, 16, () -> { sPage = (sPage + 1) % pages; restartEntrance(1); init(); });
+        for (int i = 0; i < sRows; i++) {
+            final int idx = sPage * sRows + i;
+            if (idx >= files.size()) break;
+            hit("srow" + i, cx + 4, top + 22 + i * 20, sListW - 8, 18, () -> selectSkin(idx));
+        }
+        int w2 = (ctlW - 20) / 2;
+        hit("smode0", ctlX, yMode(), w2, 16, () -> { pickMode = false; recolor(); });
+        hit("smode1", ctlX + w2 + 4, yMode(), w2, 16, () -> { pickMode = true; recolor(); status = Component.literal("Click the head or the preview to pick the color to change"); });
+        int bw = (ctlW - 4) / 2;
+        Runnable[] acts = {
+                () -> { resetRecolor(); status = Component.literal("Recolor reset"); },
+                this::saveSkin,
+                () -> { refreshFiles(true); init(); },
+                this::openFolder,
+                this::sendSkinToDiscord,
+                () -> { source = new int[64 * 64]; template(source); skinName = "Starter template"; selIdx = -1; resetRecolor(); status = Component.literal("Starter template loaded"); }
+        };
+        for (int i = 0; i < SKIN_BTNS.length; i++) {
+            hit("sb" + i, ctlX + (i % 2) * (bw + 4), yBtn() + (i / 2) * 22, bw, 18, acts[i]);
+        }
+        hit("sdraw", ctlX, Math.min(yBtn() + 66, bottom - 20), ctlW, 18, () -> { paintOn = true; init(); status = Component.literal("Draw: left click paints, right click erases"); });
+    }
+
+    // ---- discord tab layout ----
+    private int discLeftW() { return Math.max(190, Math.min(260, cw * 11 / 20)); }
+
+    private EditBox makeBox(int x, int y, int w, String value, Consumer<String> onChange, boolean mask) {
+        EditBox b = new EditBox(font, x + 5, y + 4, w - 10, 12, Component.literal("field"));
+        b.setBordered(false);
+        b.setMaxLength(120);
+        if (mask) b.addFormatter((s, i) -> FormattedCharSequence.forward("*".repeat(s.length()), Style.EMPTY));
+        building = true;
+        b.setValue(value);
+        building = false;
+        b.setResponder(s -> { if (!building) onChange.accept(s); });
+        addWidget(b);
+        fields.add(b);
+        return b;
+    }
+
+    private void initDiscord() {
+        int lw = discLeftW(), fx0 = cx + 12, fw = lw - 24;
+        tokenBox = makeBox(fx0, top + 43, fw, DiscordBot.token, s -> DiscordBot.token = s.trim(), true);
+        chanBox = makeBox(fx0, top + 73, fw, DiscordBot.channelId, s -> DiscordBot.channelId = s.trim(), false);
+        userBox = makeBox(fx0, top + 103, fw, DiscordBot.userId, s -> DiscordBot.userId = s.trim(), false);
+        hit("opt5", cx + 6, top + 123, lw - 12, 16, () -> DiscordBot.listen = !DiscordBot.listen);
+        hit("opt6", cx + 6, top + 141, lw - 12, 16, () -> DiscordBot.autoPost = !DiscordBot.autoPost);
+        int bw = (lw - 24 - 8) / 3, by = top + 163;
+        hit("dcon", fx0, by, bw, 18, () -> {
+            if (DiscordBot.isRunning()) DiscordBot.stop(); else { savePrefs(); DiscordBot.start(); }
+        });
+        hit("dtrim", fx0 + bw + 4, by, bw, 18, () -> DiscordBot.sendText(loadoutText()));
+        hit("dskin", fx0 + 2 * (bw + 4), by, bw, 18, this::sendSkinToDiscord);
+        hit("opt11", cx + 6, top + 185, lw - 12, 16, () -> DiscordBot.relay = !DiscordBot.relay);
+        chatBox = makeBox(fx0, top + 221, fw - 52, chatText, s -> chatText = s, false);
+        hit("dchat", fx0 + fw - 48, top + 221, 48, 18, this::sendChat);
+    }
+
+    private void sendSkinToDiscord() {
+        byte[] png = skinPng();
+        if (png.length == 0) { status = Component.literal("Could not build the skin PNG"); return; }
+        DiscordBot.sendFile("Skin from Trim Studio: " + skinName, "skin.png", png);
+        status = Component.literal("Sending skin to Discord...");
+    }
+
+    // ---- discord tab: Bot / Chat pages ----
+    private static final String[] DISC_PAGES = {"Bot", "Chat"};
+
+    private void initDiscordTab() {
+        int chipX = cx + 8;
+        for (int i = 0; i < DISC_PAGES.length; i++) {
+            final int idx = i;
+            int w = font.width(DISC_PAGES[i]) + 14;
+            hit("dchip" + i, chipX, top, w, 16, () -> { discPage = idx; restartEntrance(1); init(); });
+            chipX += w + 4;
+        }
+        top += 22;
+        try { if (discPage == 0) initDiscord(); else initChat(); } finally { top -= 22; }
+    }
+
+    private void drawDiscordTab(GuiGraphics g, int mx, int my) {
+        int chipX = cx + 8;
+        for (int i = 0; i < DISC_PAGES.length; i++) {
+            int w = font.width(DISC_PAGES[i]) + 14;
+            float sel = ease("dchip" + i, discPage == i ? 1 : 0, 14);
+            round(g, chipX, top, w, 16, mix(cCard, cAccent, 0.15f + 0.8f * sel));
+            text(g, DISC_PAGES[i], chipX + 7, top + 4, mix(TEXT, cBg, sel));
+            chipX += w + 4;
+        }
+        top += 22;
+        try { if (discPage == 0) drawDiscord(g, mx, my); else drawChat(g, mx, my); } finally { top -= 22; }
+    }
+
+    // ---- skin pixel painter ----
+    private static boolean paintOn = false;
+    private static int paintColor = 0xFF3BB273, paintTool = 0;     // 0 pen, 1 eraser, 2 fill, 3 picker
+    private static final String[] PAINT_TOOLS = {"Pen", "Eraser", "Fill", "Pick"};
+    private static final int[] PAINT_PAL = {0xFFC8102E, 0xFFF2762B, 0xFFFFD23F, 0xFF3BB273, 0xFF1B998B, 0xFF2E86DE, 0xFF5B4B8A, 0xFFE056A0,
+            0xFFFFFFFF, 0xFFBFC5D2, 0xFF7C8294, 0xFF3A3F4B, 0xFF111111, 0xFF7A4A21, 0xFFF1C9A5, 0xFF9AD1FF};
+
+    /** {x, y, scale} of the 64x64 skin canvas. */
+    private int[] paintCanvas() {
+        int sc = Math.max(2, Math.min(6, (bottom - top - 8) / 64));
+        return new int[]{cx + 8, top + 4, sc};
+    }
+
+    private static void paintFill(int x, int y) {
+        int target = source[y * 64 + x], rep = paintColor;
+        if (target == rep) return;
+        ArrayDeque<int[]> st = new ArrayDeque<>();
+        st.push(new int[]{x, y});
+        while (!st.isEmpty()) {
+            int[] p = st.pop();
+            if (p[0] < 0 || p[1] < 0 || p[0] > 63 || p[1] > 63 || source[p[1] * 64 + p[0]] != target) continue;
+            source[p[1] * 64 + p[0]] = rep;
+            st.push(new int[]{p[0] + 1, p[1]}); st.push(new int[]{p[0] - 1, p[1]});
+            st.push(new int[]{p[0], p[1] + 1}); st.push(new int[]{p[0], p[1] - 1});
+        }
+    }
+
+    private void initPaint() {
+        ensureSkin();
+        int[] cv = paintCanvas();
+        int rx = cv[0] + 64 * cv[2] + 12;
+        for (int i = 0; i < 16; i++) {
+            final int col = PAINT_PAL[i];
+            hit("psw" + i, rx + (i % 4) * 17, top + 4 + (i / 4) * 17, 15, 15, () -> { paintColor = col; if (paintTool != 2) paintTool = 0; });
+        }
+        int ty = top + 4 + 4 * 17 + 6;
+        for (int i = 0; i < 4; i++) { final int t = i; hit("ptool" + i, rx + (i % 2) * 40, ty + (i / 2) * 22, 37, 18, () -> paintTool = t); }
+        hit("psave", rx, ty + 48, 77, 18, this::saveSkin);
+        hit("pback", rx, ty + 70, 77, 18, () -> { paintOn = false; init(); });
+    }
+
+    private void drawPaint(GuiGraphics g) {
+        ensureSkin();
+        int[] cv = paintCanvas();
+        int sc = cv[2], x0 = cv[0], y0 = cv[1];
+        g.fill(x0 - 1, y0 - 1, x0 + 64 * sc + 1, y0 + 64 * sc + 1, cLine);
+        for (int y = 0; y < 64; y++) for (int x = 0; x < 64; x++) {
+            int col = source[y * 64 + x];
+            g.fill(x0 + x * sc, y0 + y * sc, x0 + (x + 1) * sc, y0 + (y + 1) * sc,
+                    (col >>> 24) != 0 ? (col | 0xFF000000) : (((x + y) & 1) == 0 ? 0xFF2A2D36 : 0xFF23262E));
+        }
+        int rx = x0 + 64 * sc + 12;
+        for (int i = 0; i < 16; i++) {
+            int sx = rx + (i % 4) * 17, sy = top + 4 + (i / 4) * 17;
+            if (PAINT_PAL[i] == paintColor) g.fill(sx - 2, sy - 2, sx + 17, sy + 17, 0xFFFFFFFF);
+            g.fill(sx, sy, sx + 15, sy + 15, PAINT_PAL[i]);
+        }
+        int ty = top + 4 + 4 * 17 + 6;
+        for (int i = 0; i < 4; i++) chip(g, "ptool" + i, new int[]{rx + (i % 2) * 40, ty + (i / 2) * 22, 37, 18}, PAINT_TOOLS[i], paintTool == i ? 1 : 0, cAccent);
+        chip(g, "psave", new int[]{rx, ty + 48, 77, 18}, "Save copy", 0, cAccent);
+        chip(g, "pback", new int[]{rx, ty + 70, 77, 18}, "Back", 0, cAccent);
+        text(g, skinDirty ? "Not saved yet" : "Saved", rx, ty + 94, skinDirty ? AMBER : muted());
+    }
+
+    private String gear(net.minecraft.world.item.ItemStack st) {
+        if (st.isEmpty()) return "-";
+        String n = st.getHoverName().getString();
+        if (st.isDamageableItem() && st.getMaxDamage() > 0) n += "  " + (100 * (st.getMaxDamage() - st.getDamageValue()) / st.getMaxDamage()) + "%";
+        return n;
+    }
+
+    // ---- waypoints tab (replaced the Target tab) ----
+    record Waypoint(String name, int x, int y, int z, String dim) { }
+    private static final List<Waypoint> WAYPOINTS = new ArrayList<>();
+    private static boolean wpLoaded = false;
+    private static int wpPage = 0;
+
+    private static Path wpPath() { return FabricLoader.getInstance().getConfigDir().resolve("trim-studio-waypoints.txt"); }
+
+    private static synchronized List<Waypoint> waypoints() {
+        if (!wpLoaded) {
+            wpLoaded = true;
+            try {
+                if (Files.exists(wpPath())) for (String l : Files.readAllLines(wpPath())) {
+                    String[] f = l.split("\t");
+                    if (f.length >= 5) WAYPOINTS.add(new Waypoint(f[0], Integer.parseInt(f[1]), Integer.parseInt(f[2]), Integer.parseInt(f[3]), f[4]));
+                }
+            } catch (Exception ignored) { }
+        }
+        return WAYPOINTS;
+    }
+
+    private static synchronized void saveWaypoints() {
+        List<String> out = new ArrayList<>();
+        for (Waypoint w : WAYPOINTS) out.add(w.name().replace('\t', ' ') + "\t" + w.x() + "\t" + w.y() + "\t" + w.z() + "\t" + w.dim());
+        try { Files.write(wpPath(), out); } catch (Exception ignored) { }
+    }
+
+    private static String dimName() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.level == null) return "?";
+        String k = String.valueOf(mc.level.dimension());            // "ResourceKey[minecraft:dimension / minecraft:overworld]"
+        int i = k.lastIndexOf(':');
+        return i >= 0 ? k.substring(i + 1).replace("]", "").trim() : k;
+    }
+
+    /** Adds a waypoint at the player (also used by the Discord !mark command). Returns a message. */
+    static synchronized String markHere(String name) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null) return "Not in a world right now";
+        List<Waypoint> l = waypoints();
+        if (name == null || name.isBlank()) name = "Waypoint " + (l.size() + 1);
+        name = name.length() > 24 ? name.substring(0, 24) : name;
+        Waypoint w = new Waypoint(name, (int) Math.floor(mc.player.getX()), (int) Math.floor(mc.player.getY()), (int) Math.floor(mc.player.getZ()), dimName());
+        l.add(w);
+        saveWaypoints();
+        return "Saved **" + w.name() + "** at " + w.x() + " " + w.y() + " " + w.z() + " (" + w.dim() + ")";
+    }
+
+    /** Text list for Discord !waypoints. */
+    static synchronized String waypointsText() {
+        List<Waypoint> l = waypoints();
+        if (l.isEmpty()) return "No waypoints saved yet";
+        StringBuilder sb = new StringBuilder("**Waypoints**\n");
+        for (Waypoint w : l) sb.append("- ").append(w.name()).append(": `").append(w.x()).append(' ').append(w.y()).append(' ').append(w.z()).append("` ").append(w.dim()).append('\n');
+        return sb.toString();
+    }
+
+    private void addWaypoint() {
+        String name = fields.isEmpty() ? "" : fields.get(0).getValue().trim();
+        status = Component.literal(markHere(name).replace("**", ""));
+        init();
+    }
+
+    private int wpRows() { return Math.max(1, (bottom - top - 56) / 18); }
+
+    private void initWaypoints() {
+        EditBox nameBox = new EditBox(font, cx + 10, top + 24, cw - 120, 16, Component.literal("Name"));
+        nameBox.setMaxLength(24);
+        nameBox.setHint(Component.literal("Waypoint name (optional)"));
+        addRenderableWidget(nameBox);
+        fields.add(nameBox);
+        hit("wadd", cx + cw - 104, top + 23, 94, 18, this::addWaypoint);
+        List<Waypoint> l = waypoints();
+        int rows = wpRows(), pages = Math.max(1, (l.size() + rows - 1) / rows);
+        wpPage = clampi(wpPage, 0, pages - 1);
+        hit("wprev", cx + cw - 46, top + 4, 18, 16, () -> { wpPage = (wpPage + pages - 1) % pages; init(); });
+        hit("wnext", cx + cw - 24, top + 4, 18, 16, () -> { wpPage = (wpPage + 1) % pages; init(); });
+        for (int i = 0; i < rows; i++) {
+            int idx = wpPage * rows + i;
+            if (idx >= l.size()) break;
+            int ry = top + 48 + i * 18;
+            final Waypoint w = l.get(idx);
+            hit("wcopy" + i, cx + cw - 82, ry, 36, 15, () -> {
+                Minecraft.getInstance().keyboardHandler.setClipboard(w.x() + " " + w.y() + " " + w.z());
+                status = Component.literal("Copied " + w.name());
+            });
+            hit("wdel" + i, cx + cw - 42, ry, 32, 15, () -> {
+                synchronized (ToggleScreen.class) { WAYPOINTS.remove(w); saveWaypoints(); }
+                status = Component.literal("Deleted " + w.name());
+                init();
+            });
+        }
+    }
+
+    private void drawWaypoints(GuiGraphics g) {
+        Minecraft mc = Minecraft.getInstance();
+        card(g, cx, top, cw, bottom - top);
+        List<Waypoint> l = waypoints();
+        int rows = wpRows(), pages = Math.max(1, (l.size() + rows - 1) / rows);
+        bold(g, "Waypoints (" + l.size() + ")", cx + 10, top + 8, TEXT);
+        String pg = (wpPage + 1) + "/" + pages;
+        text(g, pg, cx + cw - 50 - font.width(pg), top + 8, muted());
+        chip(g, "wprev", new int[]{cx + cw - 46, top + 4, 18, 16}, "<", 0, cAccent);
+        chip(g, "wnext", new int[]{cx + cw - 24, top + 4, 18, 16}, ">", 0, cAccent);
+        chip(g, "wadd", new int[]{cx + cw - 104, top + 23, 94, 18}, "Add here", 0, cAccent);
+        if (l.isEmpty()) { text(g, "Stand somewhere and press Add here to save it", cx + 12, top + 52, muted()); return; }
+        String here = dimName();
+        for (int i = 0; i < rows; i++) {
+            int idx = wpPage * rows + i;
+            if (idx >= l.size()) break;
+            Waypoint w = l.get(idx);
+            int ry = top + 48 + i * 18;
+            round(g, cx + 6, ry - 2, cw - 12, 17, alpha(cAccent, 0.06f));
+            text(g, fit(w.name(), cw / 3), cx + 12, ry + 2, TEXT);
+            String info;
+            if (mc.player != null && w.dim().equals(here)) {
+                double dx = w.x() + 0.5 - mc.player.getX(), dz = w.z() + 0.5 - mc.player.getZ();
+                int dist = (int) Math.round(Math.sqrt(dx * dx + dz * dz));
+                // angle between where the player looks and the waypoint, turned into an arrow
+                double ang = Math.toDegrees(Math.atan2(-dx, dz)) - mc.player.getYRot();
+                ang = ((ang % 360) + 540) % 360 - 180;
+                String[] arrows = {"↑", "↗", "→", "↘", "↓", "↙", "←", "↖"};
+                String arrow = arrows[Math.floorMod((int) Math.round(ang / 45.0), 8)];
+                info = arrow + " " + dist + "m   " + w.x() + " " + w.y() + " " + w.z();
+            } else {
+                info = w.x() + " " + w.y() + " " + w.z() + "  (" + w.dim() + ")";
+            }
+            text(g, fit(info, cw - cw / 3 - 110), cx + 20 + cw / 3, ry + 2, muted());
+            chip(g, "wcopy" + i, new int[]{cx + cw - 82, ry, 36, 15}, "Copy", 0, cAccent);
+            chip(g, "wdel" + i, new int[]{cx + cw - 42, ry, 32, 15}, "Del", 0, RED);
+        }
+    }
+
+    // ---- snake tab (new) ----
+    private static final int SN_W = 24, SN_H = 16;
+    private static final ArrayDeque<int[]> snake = new ArrayDeque<>();
+    private static int snDir = 1, snNext = 1, snFoodX = 5, snFoodY = 5, snScore = 0, snBest = 0;
+    private static boolean snakeAlive = false;
+    private static long snLast = 0;
+    private static final Random SN_RND = new Random();
+
+    private void initSnake() { }
+
+    private void snakeStart() {
+        snake.clear();
+        for (int i = 0; i < 4; i++) snake.addFirst(new int[]{4 + i, SN_H / 2});
+        snDir = snNext = 1; snScore = 0; snakeAlive = true; snLast = System.currentTimeMillis();
+        snFood();
+    }
+
+    private static void snFood() {
+        for (int t = 0; t < 500; t++) {
+            int x = SN_RND.nextInt(SN_W), y = SN_RND.nextInt(SN_H);
+            boolean hit = false;
+            for (int[] p : snake) if (p[0] == x && p[1] == y) { hit = true; break; }
+            if (!hit) { snFoodX = x; snFoodY = y; return; }
+        }
+    }
+
+    /** Arrow keys / WASD steer; Space starts. 0 up, 1 right, 2 down, 3 left. */
+    private boolean snakeKey(int k) {
+        int d = switch (k) {
+            case GLFW.GLFW_KEY_UP, GLFW.GLFW_KEY_W -> 0;
+            case GLFW.GLFW_KEY_RIGHT, GLFW.GLFW_KEY_D -> 1;
+            case GLFW.GLFW_KEY_DOWN, GLFW.GLFW_KEY_S -> 2;
+            case GLFW.GLFW_KEY_LEFT, GLFW.GLFW_KEY_A -> 3;
+            case GLFW.GLFW_KEY_SPACE -> { if (!snakeAlive) snakeStart(); yield -2; }
+            default -> -1;
+        };
+        if (d == -1) return false;
+        if (d >= 0 && snakeAlive && (d + 2) % 4 != snDir) snNext = d;
+        return true;
+    }
+
+    private static void snakeStep() {
+        snDir = snNext;
+        int[] h = snake.peekFirst();
+        int nx = h[0] + (snDir == 1 ? 1 : snDir == 3 ? -1 : 0), ny = h[1] + (snDir == 2 ? 1 : snDir == 0 ? -1 : 0);
+        boolean eat = nx == snFoodX && ny == snFoodY;
+        if (!eat) snake.removeLast();
+        boolean dead = nx < 0 || ny < 0 || nx >= SN_W || ny >= SN_H;
+        for (int[] p : snake) if (p[0] == nx && p[1] == ny) dead = true;
+        if (dead) { snakeAlive = false; snBest = Math.max(snBest, snScore); return; }
+        snake.addFirst(new int[]{nx, ny});
+        if (eat) { snScore++; snFood(); }
+    }
+
+    private void drawSnake(GuiGraphics g) {
+        card(g, cx, top, cw, bottom - top);
+        bold(g, "Snake", cx + 10, top + 8, TEXT);
+        String sc = "Score " + snScore + "   Best " + snBest;
+        text(g, sc, cx + cw - 10 - font.width(sc), top + 8, muted());
+        int cell = Math.max(4, Math.min((cw - 20) / SN_W, (bottom - top - 40) / SN_H));
+        int gx = cx + (cw - cell * SN_W) / 2, gy = top + 24;
+        g.fill(gx, gy, gx + cell * SN_W, gy + cell * SN_H, mix(cCard, cBg, 0.6f));
+        long now = System.currentTimeMillis();
+        long speed = Math.max(60, 140 - snScore * 3L);
+        if (snakeAlive) while (now - snLast >= speed && snakeAlive) { snLast += speed; snakeStep(); }
+        g.fill(gx + snFoodX * cell + 1, gy + snFoodY * cell + 1, gx + (snFoodX + 1) * cell - 1, gy + (snFoodY + 1) * cell - 1, RED);
+        boolean head = true;
+        for (int[] p : snake) {
+            g.fill(gx + p[0] * cell, gy + p[1] * cell, gx + (p[0] + 1) * cell - 1, gy + (p[1] + 1) * cell - 1, head ? cAccent2 : cAccent);
+            head = false;
+        }
+        if (!snakeAlive) {
+            String t = snake.isEmpty() ? "Press Space or Start game" : "Game over! Space to play again";
+            text(g, t, gx + (cell * SN_W - font.width(t)) / 2, gy + cell * SN_H / 2 - 4, 0xFFFFFFFF);
+        }
+        text(g, "Arrow keys or WASD to steer", cx + 10, gy + cell * SN_H + 4, muted());
+    }
+
+    // ---- training tab: CPS test + aim trainer ----
+    private static final String[] TRAIN_PAGES = {"CPS", "Aim"};
+    private static int trainPage = 0;
+    private static final ArrayDeque<Long> cpsClicks = new ArrayDeque<>();
+    private static double cpsBest = 0;
+    private static final int AIM_R = 10;
+    private static final Random AIM_RND = new Random();
+    private static boolean aimRunning = false;
+    private static long aimEnd = 0, aimSpawn = 0, aimReact = 0;
+    private static int aimX = 0, aimY = 0, aimHits = 0, aimMisses = 0, aimBest = 0;
+
+    private int[] trainArea() {
+        int aw = Math.max(120, cw - 150), ah = Math.max(80, bottom - top - 36);
+        return new int[]{cx + 8, top + 26, aw, ah};
+    }
+
+    private void aimNew() {
+        int[] a = trainArea();
+        aimX = a[0] + AIM_R + 2 + AIM_RND.nextInt(Math.max(1, a[2] - 2 * AIM_R - 4));
+        aimY = a[1] + AIM_R + 2 + AIM_RND.nextInt(Math.max(1, a[3] - 2 * AIM_R - 4));
+        aimSpawn = System.currentTimeMillis();
+    }
+
+    private void trainAction() {
+        if (trainPage == 0) { cpsClicks.clear(); cpsBest = 0; return; }
+        if (aimRunning) { aimRunning = false; return; }
+        aimRunning = true; aimHits = 0; aimMisses = 0; aimReact = 0;
+        aimEnd = System.currentTimeMillis() + 30000L;
+        aimNew();
+    }
+
+    private void initTrain() {
+        int chipX = cx + 8;
+        for (int i = 0; i < TRAIN_PAGES.length; i++) {
+            final int idx = i;
+            int w = font.width(TRAIN_PAGES[i]) + 14;
+            hit("trchip" + i, chipX, top, w, 16, () -> { trainPage = idx; init(); });
+            chipX += w + 4;
+        }
+        int[] a = trainArea();
+        hit("tract", a[0] + a[2] + 12, top + 26 + 90, 126, 18, this::trainAction);
+    }
+
+    private void drawTrain(GuiGraphics g) {
+        int chipX = cx + 8;
+        for (int i = 0; i < TRAIN_PAGES.length; i++) {
+            int w = font.width(TRAIN_PAGES[i]) + 14;
+            float sel = ease("trchip" + i, trainPage == i ? 1 : 0, 14);
+            round(g, chipX, top, w, 16, mix(cCard, cAccent, 0.15f + 0.8f * sel));
+            text(g, TRAIN_PAGES[i], chipX + 7, top + 4, mix(TEXT, cBg, sel));
+            chipX += w + 4;
+        }
+        int[] a = trainArea();
+        int px2 = a[0] + a[2] + 12, pw2 = 126;
+        g.fill(a[0] - 1, a[1] - 1, a[0] + a[2] + 1, a[1] + a[3] + 1, cLine);
+        g.fill(a[0], a[1], a[0] + a[2], a[1] + a[3], mix(cCard, cBg, 0.35f));
+        card(g, px2 - 4, a[1], pw2 + 8, a[3]);
+        long now = System.currentTimeMillis();
+        if (trainPage == 0) {
+            while (!cpsClicks.isEmpty() && now - cpsClicks.peekFirst() > 5000) cpsClicks.removeFirst();
+            int n1 = 0;
+            for (long t : cpsClicks) if (now - t <= 1000) n1++;
+            cpsBest = Math.max(cpsBest, n1);
+            String big = "" + n1;
+            text(g, "Click in this box as fast as you can", a[0] + (a[2] - font.width("Click in this box as fast as you can")) / 2, a[1] + a[3] / 2 - 20, muted());
+            bold(g, big, a[0] + (a[2] - font.width(big)) / 2, a[1] + a[3] / 2 - 4, TEXT);
+            text(g, "CPS", a[0] + (a[2] - font.width("CPS")) / 2, a[1] + a[3] / 2 + 8, muted());
+            bold(g, "Stats", px2, a[1] + 8, TEXT);
+            text(g, "Now: " + n1, px2, a[1] + 24, TEXT);
+            text(g, String.format(Locale.ROOT, "Average (5s): %.1f", cpsClicks.size() / 5.0), px2, a[1] + 38, TEXT);
+            text(g, "Best: " + (int) cpsBest, px2, a[1] + 52, TEXT);
+            chip(g, "tract", new int[]{px2, a[1] + 90, pw2, 18}, "Reset", 0, cAccent);
+        } else {
+            if (aimRunning) {
+                if (now >= aimEnd) { aimRunning = false; aimBest = Math.max(aimBest, aimHits); }
+                else if (now - aimSpawn > 1500) { aimMisses++; aimNew(); }
+            }
+            if (aimRunning) {
+                disc(g, aimX, aimY, AIM_R, cAccent);
+                disc(g, aimX, aimY, AIM_R / 2, 0xFFFFFFFF);
+            } else {
+                String t = aimHits + aimMisses > 0 ? "Round over: " + aimHits + " hits" : "Press Start and click the targets";
+                text(g, t, a[0] + (a[2] - font.width(t)) / 2, a[1] + a[3] / 2 - 4, muted());
+            }
+            int total = aimHits + aimMisses;
+            bold(g, aimRunning ? "Time " + Math.max(0, (aimEnd - now) / 1000) + "s" : "30 second round", px2, a[1] + 8, TEXT);
+            text(g, "Hits: " + aimHits, px2, a[1] + 24, TEXT);
+            text(g, "Misses: " + aimMisses, px2, a[1] + 36, TEXT);
+            text(g, "Accuracy: " + (total == 0 ? "-" : (100 * aimHits / total) + "%"), px2, a[1] + 48, TEXT);
+            text(g, "Avg reaction: " + (aimHits == 0 ? "-" : (aimReact / aimHits) + " ms"), px2, a[1] + 60, TEXT);
+            text(g, "Best round: " + aimBest, px2, a[1] + 72, muted());
+            chip(g, "tract", new int[]{px2, a[1] + 90, pw2, 18}, aimRunning ? "Stop" : "Start", 0, cAccent);
+        }
+    }
+
+    // ---- players tab ----
+    private static int playerPage = 0;
+
+    private List<PlayerInfo> onlinePlayers() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.getConnection() == null) return new ArrayList<>();
+        List<PlayerInfo> l = new ArrayList<>(mc.getConnection().getOnlinePlayers());
+        l.sort(Comparator.comparing(p -> p.getProfile().name().toLowerCase(Locale.ROOT)));
+        return l;
+    }
+
+    private int playerRows() { return Math.max(1, (bottom - top - 30) / 18); }
+
+    private void initPlayers() {
+        int pages = Math.max(1, (onlinePlayers().size() + playerRows() - 1) / playerRows());
+        playerPage = clampi(playerPage, 0, pages - 1);
+        hit("pprev", cx + cw - 46, top + 4, 18, 16, () -> { playerPage = (playerPage + pages - 1) % pages; });
+        hit("pnext", cx + cw - 24, top + 4, 18, 16, () -> { playerPage = (playerPage + 1) % pages; });
+    }
+
+    private void drawPlayers(GuiGraphics g, int mx, int my) {
+        Minecraft mc = Minecraft.getInstance();
+        card(g, cx, top, cw, bottom - top);
+        List<PlayerInfo> all = onlinePlayers();
+        int rows = playerRows(), pages = Math.max(1, (all.size() + rows - 1) / rows);
+        playerPage = clampi(playerPage, 0, pages - 1);
+        bold(g, "Players online (" + all.size() + ")" + (VoiceStatus.available() ? "  \u00b7 voice chat" : ""), cx + 10, top + 8, TEXT);
+        String pg = (playerPage + 1) + "/" + pages;
+        text(g, pg, cx + cw - 50 - font.width(pg), top + 8, muted());
+        chip(g, "pprev", new int[]{cx + cw - 46, top + 4, 18, 16}, "<", 0, cAccent);
+        chip(g, "pnext", new int[]{cx + cw - 24, top + 4, 18, 16}, ">", 0, cAccent);
+        if (all.isEmpty()) { text(g, "Join a world or server to see players", cx + 12, top + 28, muted()); return; }
+        int nameW = Math.max(60, cw / 3);
+        for (int i = 0; i < rows; i++) {
+            int idx = playerPage * rows + i;
+            if (idx >= all.size()) break;
+            PlayerInfo info = all.get(idx);
+            int ry = top + 26 + i * 18;
+            try { PlayerFaceRenderer.draw(g, info.getSkin(), cx + 10, ry + 1, 12); } catch (Exception ignored) { }
+            text(g, fit(info.getProfile().name(), nameW - 16), cx + 26, ry + 5, TEXT);
+            int lat = info.getLatency();
+            String ping = lat > 0 ? lat + " ms" : "-";
+            VoiceStatus.State vs = VoiceStatus.of(info.getProfile().id());
+            if (vs != VoiceStatus.State.UNKNOWN) {
+                String vt = vs.label;
+                int vcol = vs == VoiceStatus.State.TALKING ? GREEN : vs == VoiceStatus.State.CONNECTED ? muted() : vs == VoiceStatus.State.NO_MOD ? muted() : RED;
+                text(g, vt, cx + cw - 70 - font.width(vt), ry + 5, vcol);
+            }
+            text(g, ping, cx + cw - 12 - font.width(ping), ry + 5, lat > 0 && lat < 100 ? GREEN : lat < 250 ? AMBER : RED);
+            net.minecraft.world.entity.player.Player pl = mc.level != null ? mc.level.getPlayerByUUID(info.getProfile().id()) : null;
+            int bx = cx + 26 + nameW, bw = Math.max(30, cw - nameW - 26 - 12 - 70 - (VoiceStatus.available() ? 60 : 0));
+            if (pl != null) {
+                float hp = pl.getHealth(), max = Math.max(1f, pl.getMaxHealth());
+                g.fill(bx, ry + 4, bx + bw, ry + 12, mix(cCard, cBg, 0.6f));
+                g.fill(bx, ry + 4, bx + Math.round(bw * Math.min(1f, hp / max)), ry + 12, hp / max > 0.5f ? GREEN : hp / max > 0.25f ? AMBER : RED);
+                String t = Math.round(hp) + "/" + Math.round(max);
+                text(g, t, bx + (bw - font.width(t)) / 2, ry + 4, 0xFFFFFFFF);
+            } else {
+                text(g, "out of range", bx, ry + 5, muted());
+            }
+        }
+    }
+
+    // ---- stats tab ----
+    private void copyPos() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null) { status = Component.literal("Join a world first"); return; }
+        String p = Math.round(mc.player.getX()) + " " + Math.round(mc.player.getY()) + " " + Math.round(mc.player.getZ());
+        mc.keyboardHandler.setClipboard(p);
+        status = Component.literal("Copied position: " + p);
+    }
+
+    private void drawStats(GuiGraphics g) {
+        Minecraft mc = Minecraft.getInstance();
+        card(g, cx, top, cw, bottom - top);
+        bold(g, "Live stats", cx + 10, top + 8, TEXT);
+        if (mc.player == null) { text(g, "Join a world to see your stats", cx + 12, top + 26, muted()); return; }
+        var p = mc.player;
+        int lat = 0, online = 0;
+        if (mc.getConnection() != null) {
+            online = mc.getConnection().getOnlinePlayers().size();
+            PlayerInfo me = mc.getConnection().getPlayerInfo(p.getUUID());
+            if (me != null) lat = me.getLatency();
+        }
+        String[][] rows = {
+                {"Position", Math.round(p.getX()) + "  " + Math.round(p.getY()) + "  " + Math.round(p.getZ())},
+                {"Health", Math.round(p.getHealth()) + " / " + Math.round(p.getMaxHealth())},
+                {"Food", p.getFoodData().getFoodLevel() + " / 20"},
+                {"Armor", "" + p.getArmorValue()},
+                {"Ping", lat > 0 ? lat + " ms" : "-"},
+                {"Players online", "" + online},
+        };
+        for (int i = 0; i < rows.length; i++) {
+            int ry = top + 28 + i * 16;
+            round(g, cx + 8, ry - 2, cw - 16, 14, alpha(cAccent, 0.06f));
+            text(g, rows[i][0], cx + 14, ry + 1, muted());
+            text(g, rows[i][1], cx + cw - 14 - font.width(rows[i][1]), ry + 1, TEXT);
+        }
+    }
+
+    // ---- cape editor tab ----
+    private static final int[] capePx = new int[64 * 32];          // ARGB, 0 = transparent
+    private static boolean capeInit = false;
+    private static int capeColor = 0xFFC8102E, capeTool = 0;       // 0 pen, 1 eraser, 2 fill, 3 picker
+    private static final String[] CAPE_TOOLS = {"Pen", "Eraser", "Fill", "Pick"};
+    private static final int[] CAPE_PAL = {0xFFC8102E, 0xFFF2762B, 0xFFFFD23F, 0xFF3BB273, 0xFF1B998B, 0xFF2E86DE, 0xFF5B4B8A, 0xFFE056A0,
+            0xFFFFFFFF, 0xFFBFC5D2, 0xFF7C8294, 0xFF3A3F4B, 0xFF111111, 0xFF7A4A21, 0xFFB7E4C7, 0xFF9AD1FF};
+
+    private static Path capePath() { return FabricLoader.getInstance().getConfigDir().resolve("trim-studio-cape.png"); }
+
+    private static void capeDefault() {
+        if (capeInit) return;
+        capeInit = true;
+        for (int y = 1; y < 17; y++) for (int x = 1; x < 11; x++) capePx[y * 64 + x] = 0xFFC8102E;
+        for (int y = 6; y < 10; y++) for (int x = 4; x < 8; x++) capePx[y * 64 + x] = 0xFFFFFFFF;
+    }
+
+    /** {x, y, scale} of the pixel canvas. */
+    private int[] capeCanvas() {
+        int sc = Math.max(2, Math.min(8, (cw - 24 - 84) / 64));
+        return new int[]{cx + 10, top + 22, sc};
+    }
+
+    private void capePaint(int x, int y, boolean edge) {
+        int i = y * 64 + x;
+        switch (capeTool) {
+            case 0 -> capePx[i] = capeColor;
+            case 1 -> capePx[i] = 0;
+            case 2 -> { if (edge) capeFill(x, y); }
+            default -> { if (edge && capePx[i] != 0) { capeColor = capePx[i]; capeTool = 0; } }
+        }
+    }
+
+    private void capeFill(int x, int y) {
+        int target = capePx[y * 64 + x];
+        if (target == capeColor) return;
+        ArrayDeque<int[]> st = new ArrayDeque<>();
+        st.push(new int[]{x, y});
+        while (!st.isEmpty()) {
+            int[] p = st.pop();
+            if (p[0] < 0 || p[1] < 0 || p[0] > 63 || p[1] > 31 || capePx[p[1] * 64 + p[0]] != target) continue;
+            capePx[p[1] * 64 + p[0]] = capeColor;
+            st.push(new int[]{p[0] + 1, p[1]}); st.push(new int[]{p[0] - 1, p[1]});
+            st.push(new int[]{p[0], p[1] + 1}); st.push(new int[]{p[0], p[1] - 1});
+        }
+    }
+
+    private void saveCape() {
+        try {
+            BufferedImage img = new BufferedImage(64, 32, BufferedImage.TYPE_INT_ARGB);
+            for (int y = 0; y < 32; y++) for (int x = 0; x < 64; x++) img.setRGB(x, y, capePx[y * 64 + x]);
+            ImageIO.write(img, "png", capePath().toFile());
+            status = Component.literal("Saved cape to config/trim-studio-cape.png");
+        } catch (Exception e) {
+            status = Component.literal("Could not save the cape: " + e.getMessage());
+        }
+    }
+
+    private void loadCape() {
+        try {
+            BufferedImage img = ImageIO.read(capePath().toFile());
+            if (img == null) { status = Component.literal("No saved cape yet"); return; }
+            Arrays.fill(capePx, 0);
+            for (int y = 0; y < Math.min(32, img.getHeight()); y++) for (int x = 0; x < Math.min(64, img.getWidth()); x++) capePx[y * 64 + x] = img.getRGB(x, y);
+            status = Component.literal("Loaded config/trim-studio-cape.png");
+        } catch (Exception e) {
+            status = Component.literal("No saved cape yet (save one first)");
+        }
+    }
+
+    private void initCape() {
+        capeDefault();
+        int[] cv = capeCanvas();
+        int sc = cv[2], rx = cv[0] + 64 * sc + 12, by = cv[1] + 32 * sc + 6;
+        for (int i = 0; i < 4; i++) { final int t = i; hit("ctool" + i, cv[0] + i * 46, by, 42, 18, () -> capeTool = t); }
+        hit("cclear", cv[0], by + 22, 60, 18, () -> Arrays.fill(capePx, 0));
+        hit("csave", cv[0] + 64, by + 22, 60, 18, this::saveCape);
+        hit("cload", cv[0] + 128, by + 22, 60, 18, this::loadCape);
+        for (int i = 0; i < 16; i++) {
+            final int col = CAPE_PAL[i];
+            hit("csw" + i, rx + (i % 4) * 17, cv[1] + (i / 4) * 17, 15, 15, () -> { capeColor = col; if (capeTool != 2) capeTool = 0; });
+        }
+    }
+
+    private void drawCape(GuiGraphics g, int mx, int my) {
+        capeDefault();
+        card(g, cx, top, cw, bottom - top);
+        bold(g, "Cape editor", cx + 10, top + 7, TEXT);
+        int[] cv = capeCanvas();
+        int sc = cv[2], x0 = cv[0], y0 = cv[1];
+        g.fill(x0 - 1, y0 - 1, x0 + 64 * sc + 1, y0 + 32 * sc + 1, cLine);
+        for (int y = 0; y < 32; y++) for (int x = 0; x < 64; x++) {
+            int col = capePx[y * 64 + x];
+            g.fill(x0 + x * sc, y0 + y * sc, x0 + (x + 1) * sc, y0 + (y + 1) * sc, col != 0 ? col : (((x + y) & 1) == 0 ? 0xFF2A2D36 : 0xFF23262E));
+        }
+        int ox = x0 + sc, oy = y0 + sc, ow = 10 * sc, oh = 16 * sc, a = 0xFFFFFFFF;   // outline: the back of the cape
+        g.fill(ox - 1, oy - 1, ox + ow + 1, oy, a); g.fill(ox - 1, oy + oh, ox + ow + 1, oy + oh + 1, a);
+        g.fill(ox - 1, oy, ox, oy + oh, a); g.fill(ox + ow, oy, ox + ow + 1, oy + oh, a);
+        int by = y0 + 32 * sc + 6;
+        for (int i = 0; i < 4; i++) chip(g, "ctool" + i, new int[]{x0 + i * 46, by, 42, 18}, CAPE_TOOLS[i], capeTool == i ? 1 : 0, cAccent);
+        chip(g, "cclear", new int[]{x0, by + 22, 60, 18}, "Clear", 0, cAccent);
+        chip(g, "csave", new int[]{x0 + 64, by + 22, 60, 18}, "Save PNG", 0, cAccent);
+        chip(g, "cload", new int[]{x0 + 128, by + 22, 60, 18}, "Load PNG", 0, cAccent);
+        int rx = x0 + 64 * sc + 12;
+        for (int i = 0; i < 16; i++) {
+            int sx = rx + (i % 4) * 17, sy = y0 + (i / 4) * 17;
+            if (CAPE_PAL[i] == capeColor) g.fill(sx - 2, sy - 2, sx + 17, sy + 17, 0xFFFFFFFF);
+            g.fill(sx, sy, sx + 15, sy + 15, CAPE_PAL[i]);
+        }
+        int py0 = y0 + 4 * 17 + 6;
+        text(g, "Preview (back)", rx, py0, muted());
+        for (int y = 0; y < 16; y++) for (int x = 0; x < 10; x++) {
+            int col = capePx[(y + 1) * 64 + x + 1];
+            g.fill(rx + x * 3, py0 + 12 + y * 3, rx + x * 3 + 3, py0 + 12 + y * 3 + 3, col != 0 ? col : 0xFF23262E);
+        }
+        text(g, fit("Left click paints, right click erases. Saved to config/trim-studio-cape.png", cw - 24), cx + 12, bottom - 12, muted());
+    }
+
+    // ---- chat tab layout ----
+    private void initChat() {
+        int lw = discLeftW(), fx0 = cx + 12, fw = lw - 24;
+        chatChanBox = makeBox(fx0, top + 34, fw, DiscordBot.chatChannelId, s -> DiscordBot.chatChannelId = s.trim(), false);
+        hit("opt12", cx + 6, top + 60, lw - 12, 16, () -> DiscordBot.logChat = !DiscordBot.logChat);
+        hit("opt13", cx + 6, top + 78, lw - 12, 16, () -> DiscordBot.sayOn = !DiscordBot.sayOn);
+        hit("opt14", cx + 6, top + 96, lw - 12, 16, () -> DiscordBot.hourly = !DiscordBot.hourly);
+        hit("opt15", cx + 6, top + 114, lw - 12, 16, () -> DiscordBot.chatEmbeds = !DiscordBot.chatEmbeds);
+        int bw = (fw - 4) / 2;
+        hit("clog", fx0, top + 142, bw, 18, () -> { ChatBridge.sendLogNow(); status = Component.literal("Sending the chat log..."); });
+        hit("ctest", fx0 + bw + 4, top + 142, bw, 18, () -> DiscordBot.sendChatText("Test message from Trim Studio"));
+    }
+
+    private void sendChat() {
+        String t = chatText.trim();
+        if (t.isEmpty()) return;
+        DiscordBot.sendText(t);
+        status = Component.literal("Sending to Discord...");
+        chatText = "";
+        if (chatBox != null) { building = true; chatBox.setValue(""); building = false; }
+    }
+
+    // ---- settings pages ----
+    private int layCardW() { return (cw - 12 - 4 * 6) / 5; }
+
+    private int layCardH() { return Math.max(56, Math.min(96, bottom - top - 22 - 6)); }
+
+    private int themeRows() { return Math.max(1, (Theme.ALL.size() + 3) / 4); }
+
+    private int themeCellH() {
+        int r = themeRows();
+        return Math.max(20, Math.min(46, (bottom - top - 26 - (r - 1) * 4) / r));
+    }
+
+    private int dispCardW() { return (cw - 8) / 2; }
+
+    private int[] colBar(int col, int ch) {
+        int half = (cw - 16) / 2;
+        return new int[]{baseCx + 8 + col * half + 14, top + 22 + 52 + ch * 16, half - 28, 10};
+    }
+
+    private void initSettings() {
+        int chipX = cx + 8;
+        for (int i = 0; i < SET_CHIPS.length; i++) {
+            final int idx = i;
+            int w = font.width(SET_CHIPS[i]) + 14;
+            hit("schip" + i, chipX, top, w, 16, () -> { setChip = idx; restartEntrance(1); init(); });
+            chipX += w + 4;
+        }
+        int y0 = top + 22;
+        if (setChip == 0) {
+            int gw = layCardW(), gh = layCardH();
+            for (int i = 0; i < LAYOUTS.length; i++) {
+                final int idx = i;
+                hit("lay" + i, cx + 6 + i * (gw + 6), y0, gw, gh, () -> setLayout(idx));
+            }
+        } else if (setChip == 1) {
+            int cellH = themeCellH(), gw = (cw - 5 * 6) / 4;
+            for (int i = 0; i < Theme.ALL.size(); i++) {
+                final Theme t = Theme.ALL.get(i);
+                int x = cx + 6 + (i % 4) * (gw + 6), y = y0 + (i / 4) * (cellH + 4);
+                hit("th" + i, x, y, gw, cellH, () -> { Config.theme = t.id(); theme = t; });
+            }
+        } else if (setChip == 2) {
+            int dw = dispCardW();
+            hit("opt0", cx + 6, y0 + 22, dw - 12, 16, () -> Config.anim = !Config.anim);
+            hit("opt1", cx + 6, y0 + 40, dw - 12, 16, () -> Config.intensity = (Config.intensity + 1) % 3);
+            hit("opt2", cx + 6, y0 + 58, dw - 12, 16, () -> Config.glow = !Config.glow);
+            hit("opt7", cx + 6, y0 + 76, dw - 12, 16, () -> glowStrong = !glowStrong);
+            hit("opt8", cx + 6, y0 + 94, dw - 12, 16, () -> speedIdx = (speedIdx + 1) % 3);
+            hit("opt9", cx + 6, y0 + 112, dw - 12, 16, () -> styleIdx = (styleIdx + 1) % 3);
+            int rx = cx + dw + 8;
+            hit("opt3", rx + 6, y0 + 22, dw - 12, 16, () -> sway = !sway);
+            hit("opt4", rx + 6, y0 + 40, dw - 12, 16, () -> followCursor = !followCursor);
+        } else {
+            hit("opt10", cx + 6, y0 + 6, cw - 12, 16, () -> customOn = !customOn);
+            hit("ccreset", cx + cw - 78, y0 + 104, 70, 16, () -> { customAccent = 0xFFF2762B; customAccent2 = 0xFFFFB347; });
+        }
+    }
+
+    // ---------------- actions ----------------
+    private String applyLabel() {
+        return switch (tab) {
+            case T_TRIMS -> "Copy /give command";
+            case T_WARDROBE -> "Save current set";
+            case T_SKIN -> "Save recolored copy";
+            case T_DISCORD -> discPage == 1 ? "Send chat log now" : (DiscordBot.isRunning() ? "Disconnect bot" : "Connect bot");
+            case T_CAPE -> "Save cape PNG";
+            case T_PLAYERS -> "Refresh list";
+            case T_STATS -> "Copy my position";
+            case T_WAYPOINTS -> "Add waypoint here";
+            case T_SNAKE -> snakeAlive ? "Restart" : "Start game";
+            case T_TRAIN -> trainPage == 0 ? "Reset CPS" : (aimRunning ? "Stop" : "Start aim round");
+            default -> "Reset preview";
+        };
+    }
+
+    private void doApply() {
+        switch (tab) {
+            case T_TRIMS -> copyGive();
+            case T_WARDROBE -> saveLoadout();
+            case T_SKIN -> saveSkin();
+            case T_DISCORD -> {
+                if (discPage == 1) { ChatBridge.sendLogNow(); status = Component.literal("Sending the chat log..."); }
+                else if (DiscordBot.isRunning()) DiscordBot.stop(); else { savePrefs(); DiscordBot.start(); }
+            }
+            case T_CAPE -> saveCape();
+            case T_PLAYERS -> init();
+            case T_STATS -> copyPos();
+            case T_WAYPOINTS -> addWaypoint();
+            case T_SNAKE -> snakeStart();
+            case T_TRAIN -> trainAction();
+            default -> { viewYaw = 0.35f; status = Component.literal("Preview reset"); }
+        }
+    }
+
+    private void copyGive() {
+        Minecraft.getInstance().keyboardHandler.setClipboard(giveCommand());
+        status = Component.literal("Copied: " + ARMOR_NAMES[armorType] + " chestplate, " + PATTERNS[pattern] + " + " + MATS[material]);
+    }
+
+    private static Path skinDir() { return FabricLoader.getInstance().getGameDir().resolve("skin-studio"); }
+
+    // ---------------- skin library + recolor ----------------
+    /** Reads a skin PNG into 64x64 ARGB pixels, or null if it isn't a skin. Old 64x32 skins get their left limbs rebuilt. */
+    private static int[] readSkin(Path f) {
+        try {
+            BufferedImage img = ImageIO.read(f.toFile());
+            if (img == null || img.getWidth() != 64 || (img.getHeight() != 64 && img.getHeight() != 32)) return null;
+            int[] c = new int[64 * 64];
+            for (int y = 0; y < img.getHeight(); y++) for (int x = 0; x < 64; x++) c[y * 64 + x] = img.getRGB(x, y);
+            if (img.getHeight() == 32) { copyLimb(c, 0, 16, 16, 48); copyLimb(c, 40, 16, 32, 48); }
+            return c;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void refreshFiles(boolean announce) {
+        filesLoaded = true;
+        Path keep = selIdx >= 0 && selIdx < files.size() ? files.get(selIdx).path() : null;
+        files.clear();
+        selIdx = -1;
+        try {
+            Path dir = skinDir();
+            Files.createDirectories(dir);
+            List<Path> paths = new ArrayList<>();
+            try (Stream<Path> s = Files.list(dir)) {
+                s.filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".png")).sorted().limit(200).forEach(paths::add);
+            }
+            for (Path p : paths) files.add(new SkinFile(p, p.getFileName().toString(), readSkin(p)));
+        } catch (Exception e) {
+            PackTogglesClient.LOG.warn("Could not list skins", e);
+            status = Component.literal("Could not read the skin-studio folder: " + e.getMessage());
+        }
+        for (int i = 0; i < files.size(); i++) if (files.get(i).path().equals(keep)) selIdx = i;
+        thumbsDirty = true;
+        if (announce) status = Component.literal("Found " + files.size() + " PNG" + (files.size() == 1 ? "" : "s") + " in skin-studio");
+    }
+
+    private void selectSkin(int idx) {
+        if (idx < 0 || idx >= files.size()) return;
+        SkinFile f = files.get(idx);
+        if (f.px() == null) { status = Component.literal(f.name() + " is not a 64x64 (or 64x32) skin"); return; }
+        selIdx = idx;
+        source = f.px().clone();
+        skinName = f.name();
+        resetRecolor();
+        status = Component.literal("Loaded " + f.name());
+    }
+
+    private static void resetRecolor() {
+        rc[0] = 0; rc[1] = 100; rc[2] = 0;
+        pickMode = false;
+        recolor();
+    }
+
+    /** Rebuilds canvas from source with the current hue / saturation / lightness, on all pixels or only near the picked color. */
+    private static void recolor() {
+        if (source == null) return;
+        boolean ident = rc[0] == 0 && rc[1] == 100 && rc[2] == 0;
+        int[] out = new int[64 * 64];
+        float[] hsb = new float[3];
+        float tolD = rc[3] * 4.42f;
+        int pr = pickColor >> 16 & 255, pg = pickColor >> 8 & 255, pb = pickColor & 255;
+        for (int i = 0; i < out.length; i++) {
+            int c = source[i], a = c >>> 24;
+            if (a == 0 || ident) { out[i] = c; continue; }
+            int r = c >> 16 & 255, g = c >> 8 & 255, b = c & 255;
+            if (pickMode) {
+                int dr = r - pr, dg = g - pg, db = b - pb;
+                if (Math.sqrt(dr * dr + dg * dg + db * db) > tolD) { out[i] = c; continue; }
+            }
+            Color.RGBtoHSB(r, g, b, hsb);
+            float h = hsb[0] + rc[0] / 360f;
+            h -= (float) Math.floor(h);
+            float s = Math.max(0f, Math.min(1f, hsb[1] * rc[1] / 100f));
+            float v = Math.max(0f, Math.min(1f, hsb[2] + rc[2] / 100f));
+            out[i] = (a << 24) | (Color.HSBtoRGB(h, s, v) & 0xFFFFFF);
+        }
+        canvas = out;
+        skinDirty = !ident;
+        skinChanged = true;
+    }
+
+    /** Picks a color from the head zoom or the front/back preview (base coordinates). Returns true if it hit. */
+    private boolean tryPick(int mx, int my) {
+        if (source == null) return false;
+        int idx = -1;
+        int hs = 8 * HEAD_Z;
+        if (mx >= ctlX && my >= top + 2 && mx < ctlX + hs && my < top + 2 + hs) {
+            int x = (mx - ctlX) / HEAD_Z, y = (my - top - 2) / HEAD_Z;
+            int ov = (8 + y) * 64 + 40 + x;
+            idx = (source[ov] >>> 24) != 0 ? ov : (8 + y) * 64 + 8 + x;
+        } else {
+            int pvW = 16 * pvScale, pvH = 32 * pvScale, pvY = top + 3;
+            for (int k = 0; k < 2 && idx < 0; k++) {
+                int ox = pvX + k * (pvW + 8);
+                if (mx < ox || my < pvY || mx >= ox + pvW || my >= pvY + pvH) continue;
+                int x = (mx - ox) / pvScale, y = (my - pvY) / pvScale;
+                for (int[] p : k == 1 ? BACK : FRONT) {
+                    if (x < p[0] || y < p[1] || x >= p[0] + p[2] || y >= p[1] + p[3]) continue;
+                    int ov = (p[7] + y - p[1]) * 64 + p[6] + x - p[0];
+                    idx = (source[ov] >>> 24) != 0 ? ov : (p[5] + y - p[1]) * 64 + p[4] + x - p[0];
+                }
+            }
+        }
+        if (idx < 0 || (source[idx] >>> 24) == 0) return false;
+        pickColor = source[idx] | 0xFF000000;
+        pickMode = true;
+        recolor();
+        status = Component.literal(String.format("Picked #%06X: the sliders now change only similar colors", pickColor & 0xFFFFFF));
+        return true;
+    }
+
+    private void saveSkin() {
+        try {
+            ensureSkin();
+            Path dir = skinDir();
+            Files.createDirectories(dir);
+            BufferedImage img = new BufferedImage(64, 64, BufferedImage.TYPE_INT_ARGB);
+            for (int i = 0; i < canvas.length; i++) img.setRGB(i % 64, i / 64, canvas[i]);
+            String base = skinName.toLowerCase(Locale.ROOT).endsWith(".png") ? skinName.substring(0, skinName.length() - 4) : skinName;
+            base = base.replaceAll("[^A-Za-z0-9_.-]+", "-");
+            if (base.length() > 40) base = base.substring(0, 40);
+            String name = base + "-" + new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date()) + ".png";
+            Path target = dir.resolve(name);
+            ImageIO.write(img, "png", target.toFile());
+            refreshFiles(false);
+            for (int i = 0; i < files.size(); i++) if (files.get(i).path().equals(target)) { selIdx = i; sPage = i / Math.max(1, sRows); }
+            source = canvas.clone();
+            skinName = name;
+            resetRecolor();
+            status = Component.literal("Saved skin-studio/" + name + (ESSENTIAL ? "  |  Essential: Wardrobe > Skins > add from file" : ""));
+            if (DiscordBot.autoPost && DiscordBot.isRunning()) sendSkinToDiscord();
+            if (tab == T_SKIN) init();
+        } catch (Exception e) {
+            PackTogglesClient.LOG.warn("Save skin failed", e);
+            status = Component.literal("Save failed: " + e.getMessage());
+        }
+    }
+
+    private void openFolder() {
+        try {
+            Files.createDirectories(skinDir());
+            String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT), p = skinDir().toString();
+            ProcessBuilder pb = os.contains("win") ? new ProcessBuilder("explorer", p) : os.contains("mac") ? new ProcessBuilder("open", p) : new ProcessBuilder("xdg-open", p);
+            pb.start();
+            status = Component.literal("Opened the skin-studio folder");
+        } catch (Exception e) {
+            status = Component.literal("Could not open the folder: " + skinDir());
+        }
+    }
+
+    private static void fillRect(int[] c, int x, int y, int w, int h, int col) {
+        for (int j = 0; j < h; j++) for (int i = 0; i < w; i++) c[(y + j) * 64 + x + i] = col;
+    }
+
+    private static void fillBox(int[] c, int[] b, int col) {
+        int u = b[0], v = b[1], w = b[2], h = b[3], d = b[4];
+        fillRect(c, u + d, v, w, d, col); fillRect(c, u + d + w, v, w, d, col);
+        fillRect(c, u, v + d, d, h, col); fillRect(c, u + d, v + d, w, h, col);
+        fillRect(c, u + d + w, v + d, d, h, col); fillRect(c, u + 2 * d + w, v + d, w, h, col);
+    }
+
+    /** A simple starter skin: skin tone, hair, face, cyan shirt, blue pants. */
+    private static void template(int[] c) {
+        Arrays.fill(c, 0);
+        int skin = 0xFFC68863, hair = 0xFF4A2F1B, shirt = 0xFF00A8A8, pants = 0xFF3C44AA, shoe = 0xFF555555;
+        for (int i = 0; i < 6; i++) fillBox(c, BOXES[i], skin);
+        fillBox(c, BOXES[1], shirt);
+        fillRect(c, 44, 20, 4, 8, shirt); fillRect(c, 40, 20, 4, 8, shirt); fillRect(c, 48, 20, 4, 8, shirt); fillRect(c, 52, 20, 4, 8, shirt);
+        fillRect(c, 36, 52, 4, 8, shirt); fillRect(c, 32, 52, 4, 8, shirt); fillRect(c, 40, 52, 4, 8, shirt); fillRect(c, 44, 52, 4, 8, shirt);
+        fillRect(c, 4, 20, 4, 9, pants); fillRect(c, 0, 20, 4, 9, pants); fillRect(c, 8, 20, 4, 9, pants); fillRect(c, 12, 20, 4, 9, pants);
+        fillRect(c, 20, 52, 4, 9, pants); fillRect(c, 16, 52, 4, 9, pants); fillRect(c, 24, 52, 4, 9, pants); fillRect(c, 28, 52, 4, 9, pants);
+        fillRect(c, 4, 29, 4, 3, shoe); fillRect(c, 20, 61, 4, 3, shoe);
+        fillRect(c, 8, 0, 8, 8, hair);
+        fillRect(c, 8, 8, 8, 1, hair); fillRect(c, 0, 8, 8, 1, hair); fillRect(c, 16, 8, 8, 1, hair);
+        fillRect(c, 24, 8, 8, 4, hair);
+        c[12 * 64 + 9] = 0xFFFFFFFF; c[12 * 64 + 10] = 0xFF3B2F8F; c[12 * 64 + 13] = 0xFF3B2F8F; c[12 * 64 + 14] = 0xFFFFFFFF;
+        c[14 * 64 + 11] = 0xFF8B4A2B; c[14 * 64 + 12] = 0xFF8B4A2B;
+    }
+
+    /** Mirrors a 16x16 limb layout (used to rebuild the left arm/leg of old 64x32 skins). */
+    private static void copyLimb(int[] c, int su, int sv, int du, int dv) {
+        int[][] r = {{4, 0, 4, 4, 4, 0}, {8, 0, 4, 4, 8, 0}, {0, 4, 4, 12, 8, 4}, {4, 4, 4, 12, 4, 4}, {8, 4, 4, 12, 0, 4}, {12, 4, 4, 12, 12, 4}};
+        for (int[] q : r) for (int j = 0; j < q[3]; j++) for (int i = 0; i < q[2]; i++)
+            c[(dv + q[5] + j) * 64 + du + q[4] + i] = c[(sv + q[1] + j) * 64 + su + q[0] + (q[2] - 1 - i)];
+    }
+
+    // ---------------- input ----------------
+    @Override
+    public boolean keyPressed(KeyEvent e) {
+        int k = e.key();
+        boolean ctrl = (e.modifiers() & GLFW.GLFW_MOD_CONTROL) != 0;
+        if (ctrl && k == GLFW.GLFW_KEY_K && search != null) {
+            setFocused(search);
+            search.setFocused(true);
+            return true;
+        }
+        if (chatBox != null && chatBox.isFocused() && (k == GLFW.GLFW_KEY_ENTER || k == GLFW.GLFW_KEY_KP_ENTER)) { sendChat(); return true; }
+        if (anyTyping()) {
+            if (k == GLFW.GLFW_KEY_ESCAPE) {
+                if (search != null) search.setFocused(false);
+                for (EditBox b : fields) b.setFocused(false);
+                setFocused(null);
+                return true;
+            }
+            return super.keyPressed(e);
+        }
+        if (tab == T_SNAKE && snakeKey(k)) return true;
+        if (k >= GLFW.GLFW_KEY_1 && k < GLFW.GLFW_KEY_1 + Math.min(9, TABS.length)) { setTab(k - GLFW.GLFW_KEY_1); return true; }
+        if (k == GLFW.GLFW_KEY_L) { setLayout(layout + 1); return true; }
+        if (k == GLFW.GLFW_KEY_TAB && layout == L_RADIAL) { radialOpen = !radialOpen; init(); return true; }
+        return super.keyPressed(e);
+    }
+
+    /** Polled each frame: sliders, colour picking and preview rotation (no mouse event overrides needed). */
+    private void pollMouse(int mx, int my) {
+        Minecraft mc = Minecraft.getInstance();
+        int prevMx = lastMx;
+        lastMx = mx;
+        boolean left = mouseLeft, right = mouseRight;
+        boolean pressed = left || right, edge = pressed && !wasPressed;
+        wasPressed = pressed;
+        if (!pressed) { sliderDrag = -1; prevDrag = false; return; }
+        if (radialOpen) return;
+
+        if (tab == T_TRIMS) {
+            if (edge && mx >= prevBox[0] && mx < prevBox[2] && my >= prevBox[1] && my < prevBox[3]) prevDrag = true;
+            if (prevDrag) viewYaw = Math.max(-1.2f, Math.min(1.2f, viewYaw + (mx - prevMx) / 45f));
+        } else if (tab == T_TRAIN) {
+            if (edge && left) {
+                int[] a = trainArea();
+                if (mx >= a[0] && mx < a[0] + a[2] && my >= a[1] && my < a[1] + a[3]) {
+                    long now = System.currentTimeMillis();
+                    if (trainPage == 0) cpsClicks.addLast(now);
+                    else if (aimRunning) {
+                        int ddx = mx - aimX, ddy = my - aimY;
+                        if (ddx * ddx + ddy * ddy <= AIM_R * AIM_R) { aimHits++; aimReact += now - aimSpawn; aimNew(); }
+                        else aimMisses++;
+                    }
+                }
+            }
+        } else if (tab == T_CAPE) {
+            int[] cv = capeCanvas();
+            if (mx >= cv[0] && mx < cv[0] + 64 * cv[2] && my >= cv[1] && my < cv[1] + 32 * cv[2]) {
+                int ppx = (mx - cv[0]) / cv[2], ppy = (my - cv[1]) / cv[2];
+                if (left) capePaint(ppx, ppy, edge); else capePx[ppy * 64 + ppx] = 0;
+            }
+        } else if (tab == T_SKIN && paintOn) {
+            int[] cv = paintCanvas();
+            if (mx >= cv[0] && mx < cv[0] + 64 * cv[2] && my >= cv[1] && my < cv[1] + 64 * cv[2]) {
+                int ppx = (mx - cv[0]) / cv[2], ppy = (my - cv[1]) / cv[2], pi = ppy * 64 + ppx;
+                ensureSkin();
+                boolean changed = false;
+                if (right) { source[pi] = 0; changed = true; }
+                else if (left) {
+                    switch (paintTool) {
+                        case 0 -> { if (source[pi] != paintColor) { source[pi] = paintColor; changed = true; } }
+                        case 1 -> { if (source[pi] != 0) { source[pi] = 0; changed = true; } }
+                        case 2 -> { if (edge) { paintFill(ppx, ppy); changed = true; } }
+                        default -> { if (edge && (source[pi] >>> 24) != 0) { paintColor = source[pi] | 0xFF000000; paintTool = 0; } }
+                    }
+                }
+                if (changed) { recolor(); skinDirty = true; }
+            }
+        } else if (tab == T_SKIN) {
+            if (edge && left) {
+                for (int i = 0; i < 4; i++) {
+                    int[] b = skinBar(i);
+                    if (mx >= b[0] - 2 && mx < b[0] + b[2] + 2 && my >= b[1] - 3 && my < b[1] + b[3] + 3) sliderDrag = i;
+                }
+                if (sliderDrag < 0) tryPick(mx, my);
+            }
+            if (sliderDrag >= 0 && sliderDrag < 4) {
+                int[] b = skinBar(sliderDrag);
+                float t = Math.max(0f, Math.min(1f, (mx - b[0]) / (float) b[2]));
+                int v = Math.round(RC_MIN[sliderDrag] + t * (RC_MAX[sliderDrag] - RC_MIN[sliderDrag]));
+                if (v != rc[sliderDrag]) { rc[sliderDrag] = v; recolor(); }
+            }
+        } else if (tab == T_SETTINGS && setChip == 3) {
+            if (edge) {
+                for (int col = 0; col < 2; col++) {
+                    for (int ch = 0; ch < 3; ch++) {
+                        int[] b = colBar(col, ch);
+                        if (mx >= b[0] && mx < b[0] + b[2] && my >= b[1] - 1 && my < b[1] + b[3] + 1) sliderDrag = 10 + col * 3 + ch;
+                    }
+                }
+            }
+            if (sliderDrag >= 10) {
+                int id = sliderDrag - 10, col = id / 3, ch = id % 3;
+                int[] b = colBar(col, ch);
+                int v = clampi(Math.round((mx - b[0]) / (float) b[2] * 255f), 0, 255);
+                int shift = 16 - 8 * ch;
+                int cur = col == 0 ? customAccent : customAccent2;
+                cur = 0xFF000000 | (cur & ~(255 << shift) & 0xFFFFFF) | (v << shift);
+                if (col == 0) customAccent = cur; else customAccent2 = cur;
+            }
+        }
+    }
+
+    // ---------------- skin textures ----------------
+    private void ensureTextures() {
+        TextureManager tm = Minecraft.getInstance().getTextureManager();
+        if (pvTex[0] == null || pvSize != pvScale) {
+            for (int k = 0; k < 2; k++) {
+                if (pvId[k] != null) tm.release(pvId[k]);
+                pvImg[k] = new NativeImage(16 * pvScale, 32 * pvScale, true);
+                final int kk = k;
+                pvTex[k] = new DynamicTexture(() -> "trimstudio preview " + kk, pvImg[k]);
+                pvId[k] = Identifier.fromNamespaceAndPath("packtoggles", "studio/preview" + k);
+                tm.register(pvId[k], pvTex[k]);
+            }
+            pvSize = pvScale;
+            texDirty = true;
+        }
+        if (headTex == null) {
+            headImg = new NativeImage(8 * HEAD_Z, 8 * HEAD_Z, true);
+            headTex = new DynamicTexture(() -> "trimstudio head", headImg);
+            headId = Identifier.fromNamespaceAndPath("packtoggles", "studio/head");
+            tm.register(headId, headTex);
+            texDirty = true;
+        }
+        int n = Math.max(1, files.size());
+        if (thumbTex == null || thumbN != n) {
+            if (thumbId != null) tm.release(thumbId);
+            thumbImg = new NativeImage(16, 16 * n, true);
+            thumbTex = new DynamicTexture(() -> "trimstudio thumbs", thumbImg);
+            thumbId = Identifier.fromNamespaceAndPath("packtoggles", "studio/thumbs");
+            tm.register(thumbId, thumbTex);
+            thumbN = n;
+            thumbsDirty = true;
+        }
+    }
+
+    private static int face(int[] c, int x, int y) {
+        return over(over(0xFF2E2626, c[(8 + y) * 64 + 8 + x]), c[(8 + y) * 64 + 40 + x]) | 0xFF000000;
+    }
+
+    private void rebuildTextures() {
+        texDirty = false;
+        for (int k = 0; k < 2; k++) {
+            int[] buf = new int[16 * 32];
+            int[][] parts = k == 1 ? BACK : FRONT;
+            for (int pass = 0; pass < 2; pass++) {
+                for (int[] p : parts) {
+                    int u = pass == 0 ? p[4] : p[6], v = pass == 0 ? p[5] : p[7];
+                    for (int j = 0; j < p[3]; j++) {
+                        for (int i = 0; i < p[2]; i++) {
+                            int bi = (p[1] + j) * 16 + p[0] + i;
+                            buf[bi] = over(buf[bi], canvas[(v + j) * 64 + u + i]);
+                        }
+                    }
+                }
+            }
+            int sc = pvScale;
+            for (int y = 0; y < 32; y++) {
+                for (int x = 0; x < 16; x++) {
+                    int c = buf[y * 16 + x];
+                    for (int dy = 0; dy < sc; dy++) for (int dx = 0; dx < sc; dx++) pvImg[k].setPixel(x * sc + dx, y * sc + dy, c);
+                }
+            }
+            pvTex[k].upload();
+        }
+        for (int y = 0; y < 8; y++) {
+            for (int x = 0; x < 8; x++) {
+                int c = face(canvas, x, y);
+                for (int dy = 0; dy < HEAD_Z; dy++) for (int dx = 0; dx < HEAD_Z; dx++) headImg.setPixel(x * HEAD_Z + dx, y * HEAD_Z + dy, c);
+            }
+        }
+        headTex.upload();
+    }
+
+    private void rebuildThumbs() {
+        thumbsDirty = false;
+        for (int i = 0; i < thumbN; i++) {
+            int[] px = i < files.size() ? files.get(i).px() : null;
+            for (int y = 0; y < 8; y++) {
+                for (int x = 0; x < 8; x++) {
+                    int c = px != null ? face(px, x, y) : ((x == y || x == 7 - y) ? 0xFFE0564F : 0xFF2E2626);
+                    for (int dy = 0; dy < 2; dy++) for (int dx = 0; dx < 2; dx++) thumbImg.setPixel(x * 2 + dx, i * 16 + y * 2 + dy, c);
+                }
+            }
+        }
+        thumbTex.upload();
+    }
+
+    private void releaseTextures() {
+        TextureManager tm = Minecraft.getInstance().getTextureManager();
+        for (int k = 0; k < 2; k++) {
+            if (pvId[k] != null) tm.release(pvId[k]);
+            pvId[k] = null; pvTex[k] = null; pvImg[k] = null;
+        }
+        pvSize = 0;
+        if (headId != null) tm.release(headId);
+        headId = null; headTex = null; headImg = null;
+        if (thumbId != null) tm.release(thumbId);
+        thumbId = null; thumbTex = null; thumbImg = null; thumbN = 0;
+    }
+
+    @Override
+    public void removed() {
+        releaseTextures();
+        super.removed();
+    }
+
+    // ---------------- 3D preview ----------------
+    private void equip() {
+        Minecraft mc = Minecraft.getInstance();
+        ClientLevel level = mc.level;
+        if (level == null || mc.player == null) { worldMissing = true; return; }
+        worldMissing = false;
+        try {
+            if (dummy == null) {
+                GameProfile profile = mc.player.getGameProfile();
+                dummy = new RemotePlayer(level, profile);
+            }
+            HolderLookup.Provider ra = level.registryAccess();
+            Holder<TrimPattern> pat = ra.lookupOrThrow(Registries.TRIM_PATTERN)
+                    .getOrThrow(ResourceKey.create(Registries.TRIM_PATTERN, Identifier.fromNamespaceAndPath("minecraft", PATTERNS[pattern].toLowerCase(Locale.ROOT))));
+            Holder<TrimMaterial> mat = ra.lookupOrThrow(Registries.TRIM_MATERIAL)
+                    .getOrThrow(ResourceKey.create(Registries.TRIM_MATERIAL, Identifier.fromNamespaceAndPath("minecraft", MATS[material].toLowerCase(Locale.ROOT))));
+            for (int i = 0; i < 4; i++) {
+                if (!pieceOn[i]) { dummy.setItemSlot(SLOTS[i], ItemStack.EMPTY); continue; }
+                ItemStack st = new ItemStack(armorItem(armorType, i));
+                st.set(DataComponents.TRIM, new ArmorTrim(mat, pat));
+                dummy.setItemSlot(SLOTS[i], st);
+            }
+        } catch (Exception ex) {
+            PackTogglesClient.LOG.warn("Trim preview failed", ex);
+            status = Component.literal("Preview failed: " + ex.getMessage());
+        }
+    }
+
+    private static Item armorItem(int type, int slot) {
+        return switch (type) {
+            case 0 -> new Item[]{Items.LEATHER_HELMET, Items.LEATHER_CHESTPLATE, Items.LEATHER_LEGGINGS, Items.LEATHER_BOOTS}[slot];
+            case 1 -> new Item[]{Items.CHAINMAIL_HELMET, Items.CHAINMAIL_CHESTPLATE, Items.CHAINMAIL_LEGGINGS, Items.CHAINMAIL_BOOTS}[slot];
+            case 2 -> new Item[]{Items.IRON_HELMET, Items.IRON_CHESTPLATE, Items.IRON_LEGGINGS, Items.IRON_BOOTS}[slot];
+            case 3 -> new Item[]{Items.GOLDEN_HELMET, Items.GOLDEN_CHESTPLATE, Items.GOLDEN_LEGGINGS, Items.GOLDEN_BOOTS}[slot];
+            case 4 -> new Item[]{Items.DIAMOND_HELMET, Items.DIAMOND_CHESTPLATE, Items.DIAMOND_LEGGINGS, Items.DIAMOND_BOOTS}[slot];
+            default -> new Item[]{Items.NETHERITE_HELMET, Items.NETHERITE_CHESTPLATE, Items.NETHERITE_LEGGINGS, Items.NETHERITE_BOOTS}[slot];
+        };
+    }
+
+    // ---------------- drawing ----------------
+    private PlayerSkin skin() {
+        Minecraft mc = Minecraft.getInstance();
+        return mc.player != null ? mc.player.getSkin() : DefaultPlayerSkin.get(mc.getUser().getProfileId());
+    }
+
+    /** Skin of a chat sender: the real one while they are in the tab list, otherwise the default skin for their UUID. */
+    private static PlayerSkin skinFor(UUID id) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.getConnection() != null) {
+            PlayerInfo info = mc.getConnection().getPlayerInfo(id);
+            if (info != null) return info.getSkin();
+        }
+        return DefaultPlayerSkin.get(id);
+    }
+
+    private void icon(GuiGraphics g, int i, int x, int y, int c, int bgc) {
+        switch (i) {
+            case T_TRIMS -> {
+                g.fill(x + 2, y, x + 12, y + 2, c); g.fill(x, y + 2, x + 14, y + 13, c);
+                g.fill(x + 1, y + 5, x + 13, y + 7, bgc); g.fill(x + 3, y + 9, x + 11, y + 13, bgc);
+            }
+            case T_WARDROBE -> { // shirt
+                g.fill(x, y + 1, x + 5, y + 5, c); g.fill(x + 9, y + 1, x + 14, y + 5, c);
+                g.fill(x + 3, y + 1, x + 11, y + 14, c); g.fill(x + 5, y + 1, x + 9, y + 3, bgc);
+            }
+            case T_SKIN -> {
+                g.fill(x + 4, y, x + 10, y + 6, c); g.fill(x + 1, y + 7, x + 13, y + 14, c);
+                g.fill(x + 6, y + 8, x + 8, y + 14, bgc);
+            }
+            case T_DISCORD -> { // game-pad-ish chat face
+                g.fill(x + 1, y + 2, x + 13, y + 12, c); g.fill(x + 3, y + 12, x + 6, y + 14, c); g.fill(x + 8, y + 12, x + 11, y + 14, c);
+                g.fill(x + 3, y + 5, x + 5, y + 8, bgc); g.fill(x + 9, y + 5, x + 11, y + 8, bgc);
+            }
+            case T_CAPE -> { // cape
+                g.fill(x + 3, y, x + 11, y + 2, c); g.fill(x + 2, y + 2, x + 12, y + 12, c); g.fill(x + 4, y + 12, x + 10, y + 14, c);
+                g.fill(x + 6, y + 5, x + 8, y + 9, bgc);
+            }
+            case T_PLAYERS -> { // two heads
+                g.fill(x + 1, y + 1, x + 6, y + 6, c); g.fill(x, y + 8, x + 7, y + 14, c);
+                g.fill(x + 8, y + 3, x + 13, y + 8, c); g.fill(x + 7, y + 9, x + 14, y + 14, c);
+            }
+            case T_WAYPOINTS -> { // map pin
+                disc(g, x + 7, y + 5, 5, c); disc(g, x + 7, y + 5, 2, bgc); g.fill(x + 5, y + 9, x + 9, y + 12, c); g.fill(x + 6, y + 12, x + 8, y + 14, c);
+            }
+            case T_SNAKE -> { // snake
+                g.fill(x, y + 10, x + 10, y + 13, c); g.fill(x + 7, y + 5, x + 10, y + 13, c); g.fill(x + 7, y + 5, x + 14, y + 8, c); g.fill(x + 11, y + 1, x + 14, y + 8, c);
+            }
+            case T_TRAIN -> { // lightning bolt
+                g.fill(x + 7, y, x + 11, y + 6, c); g.fill(x + 3, y + 6, x + 11, y + 8, c); g.fill(x + 3, y + 8, x + 7, y + 14, c);
+            }
+            case T_STATS -> { // bars
+                g.fill(x + 1, y + 8, x + 4, y + 14, c); g.fill(x + 5, y + 4, x + 8, y + 14, c); g.fill(x + 9, y + 1, x + 12, y + 14, c);
+            }
+            default -> { g.fill(x + 6, y, x + 8, y + 14, c); g.fill(x, y + 6, x + 14, y + 8, c); disc(g, x + 7, y + 7, 5, c); disc(g, x + 7, y + 7, 2, bgc); }
+        }
+    }
+
+    @Override
+    public void render(GuiGraphics g, int mx, int my, float partial) {
+        partialTick = partial;
+        if (dirty) {
+            dirty = false;
+            init();
+            if (refocus && search != null) { setFocused(search); search.setFocused(true); }
+            refocus = false;
+        }
+        long now = System.nanoTime();
+        dt = Math.min(0.05f, (now - lastNanos) / 1e9f);
+        lastNanos = now;
+        float adt = dt * SPEED_MUL[speedIdx];
+        time += adt;
+        openT = Math.min(1f, openT + adt * 3f);
+        tabT = Math.min(1f, tabT + adt * 2.2f);
+
+        int tA = customOn ? customAccent : theme.accent(), tA2 = customOn ? customAccent2 : theme.accent2();
+        if (!colorsInit) { cAccent = tA; cAccent2 = tA2; cBg = theme.bg(); cCard = theme.card(); cLine = theme.line(); colorsInit = true; }
+        float k = Math.min(1f, dt * 6f);
+        cAccent = mix(cAccent, tA, k); cAccent2 = mix(cAccent2, tA2, k);
+        cBg = mix(cBg, theme.bg(), k); cCard = mix(cCard, theme.card(), k); cLine = mix(cLine, theme.line(), k);
+
+        pollMouse(mx, my);
+        if (showcase && tab == T_TRIMS) {
+            showTimer += adt;
+            if (showTimer > 1.4f) { showTimer = 0; pattern = (pattern + 1) % PATTERNS.length; equipDirty = true; }
+        }
+        if (tab == T_TRIMS && equipDirty) { equipDirty = false; equip(); }
+        if (tab == T_SKIN) {
+            ensureSkin();
+            if (skinChanged) { skinChanged = false; texDirty = true; }
+            ensureTextures();
+            if (texDirty) rebuildTextures();
+            if (thumbsDirty) rebuildThumbs();
+        }
+
+        super.render(g, mx, my, partial);
+
+        float pulse = Config.glow ? 0.5f + 0.5f * (float) Math.sin(time * 1.6f) : 0.5f;
+        float gm = glowStrong ? 1.8f : 1f;
+        for (int i = 5; i >= 1; i--) round(g, px - i, py - i, pw + 2 * i, ph + 2 * i, alpha(cAccent, (0.10f + 0.10f * pulse) * gm / i));
+        round(g, px, py, pw, ph, mix(cAccent, cBg, 0.45f));
+        round(g, px + 1, py + 1, pw - 2, ph - 2, alpha(cBg, STYLE_A[styleIdx]));
+
+        g.enableScissor(px + 1, py + 1, px + pw - 1, py + ph - 1);
+        if (Config.anim) {
+            fx.update(adt, theme, pw, ph, Config.intensity);
+            fx.draw(g, font, theme, px, py, pw, ph);
+        }
+        int seg = 90, sx = px + (int) ((time * 70) % (pw + seg)) - seg;
+        for (int i = 0; i < seg; i += 2) {
+            int xx = sx + i;
+            if (xx > px && xx < px + pw) g.fill(xx, py + 1, xx + 2, py + 2, alpha(cAccent2, (i / (float) seg) * 0.9f));
+        }
+        g.disableScissor();
+
+        drawNav(g);
+        drawHeader(g, mx, my, partial);
+
+        float e = eo(tabT);
+        int saveCx = cx;
+        cx = saveCx + (int) ((1f - e) * 28f * tabDir);
+        g.enableScissor(saveCx - 2, top - 2, saveCx + cw + 2, bottom + 2);
+        try {
+            switch (tab) {
+                case T_WARDROBE -> drawWardrobe(g);
+                case T_SKIN -> drawSkin(g);
+                case T_DISCORD -> drawDiscordTab(g, mx, my);
+                case T_CAPE -> drawCape(g, mx, my);
+                case T_PLAYERS -> drawPlayers(g, mx, my);
+                case T_STATS -> drawStats(g);
+                case T_WAYPOINTS -> drawWaypoints(g);
+                case T_SNAKE -> drawSnake(g);
+                case T_TRAIN -> drawTrain(g);
+                case T_SETTINGS -> drawSettings(g);
+                default -> drawTrims(g, mx, my);
+            }
+        } finally {
+            cx = saveCx;
+        }
+        float fade = 1f - e;
+        if (fade > 0.01f) g.fill(saveCx - 2, top - 2, saveCx + cw + 2, bottom + 2, alpha(cBg, fade * 0.9f));
+        g.disableScissor();
+
+        drawBottom(g);
+        if (layout == L_RADIAL && radialOpen) drawWheel(g);
+        drawTooltips(g);
+
+        float o = 1f - openT;
+        if (o > 0.01f) round(g, px, py, pw, ph, alpha(0x000000, o * o));
+    }
+
+    // ---- navigation drawing ----
+    private void drawNav(GuiGraphics g) {
+        switch (layout) {
+            case L_DOCK -> drawDock(g);
+            case L_RADIAL -> drawRadialButton(g);
+            case L_TABS -> drawTabsRow(g);
+            default -> drawSidebar(g, layout == L_CLASSIC);
+        }
+    }
+
+    private void springTo(int[] r) {
+        if (Float.isNaN(selX)) { selX = r[0]; selY = r[1]; selVX = 0; selVY = 0; }
+        for (int s = 0; s < 4; s++) {
+            float h = dt / 4f;
+            selVX += (320f * (r[0] - selX) - 26f * selVX) * h;
+            selX += selVX * h;
+            selVY += (320f * (r[1] - selY) - 26f * selVY) * h;
+            selY += selVY * h;
+        }
+    }
+
+    private void drawSidebar(GuiGraphics g, boolean classic) {
+        int sbw = classic ? 106 : 38;
+        round(g, px + 6, py + 6, sbw, ph - 12, mix(cCard, cBg, 0.3f));
+        disc(g, px + 25, py + 23, 11, alpha(cAccent, 0.25f));
+        disc(g, px + 25, py + 23, 8, cAccent);
+        disc(g, px + 25, py + 23, 4, cAccent2);
+        if (classic) bold(g, "Studio", px + 42, py + 19, TEXT);
+
+        int[] tr = navRect(tab);
+        springTo(tr);
+        int hx = Math.round(selX), hy = Math.round(selY);
+        int hw = Math.round(ease("selw", tr[2], 14)), hh = Math.round(ease("selh", tr[3], 14));
+        round(g, hx, hy, hw, hh, alpha(cAccent, 0.95f));
+        g.fill(px + 6, hy + 6, px + 8, hy + hh - 6, cAccent2);
+
+        for (int i = 0; i < TABS.length; i++) {
+            int[] r = navRect(i);
+            float hv = ease("tabhov" + i, hov("tab" + i) ? 1 : 0, 16);
+            float sel = ease("tabsel" + i, tab == i ? 1 : 0, 14);
+            if (hv > 0.02f && sel < 0.9f) round(g, r[0], r[1], r[2], r[3], alpha(cAccent, 0.12f * hv));
+            icon(g, i, r[0] + 10, r[1] + (r[3] - 14) / 2, mix(TEXT, cBg, sel), mix(cBg, cAccent, sel));
+            if (classic) text(g, TABS[i], r[0] + 30, r[1] + (r[3] - 8) / 2, mix(TEXT, cBg, sel));
+        }
+
+        if (classic) {
+            int wy = py + ph - 50;
+            if (wy > py + 44 + TABS.length * tabStep + 2) {
+                card(g, px + 10, wy, 98, 38);
+                text(g, ARMOR_NAMES[armorType], px + 17, wy + 7, muted());
+                bold(g, fit(PATTERNS[pattern], 82), px + 17, wy + 21, MAT_COL[material]);
+            }
+        }
+    }
+
+    private void drawTabsRow(GuiGraphics g) {
+        int[] tr = navRect(tab);
+        springTo(tr);
+        int hw = Math.round(ease("selw", tr[2], 14));
+        round(g, Math.round(selX), Math.round(selY), hw, tr[3], alpha(cAccent, 0.95f));
+        for (int i = 0; i < TABS.length; i++) {
+            int[] r = navRect(i);
+            float hv = ease("tabhov" + i, hov("tab" + i) ? 1 : 0, 16);
+            float sel = ease("tabsel" + i, tab == i ? 1 : 0, 14);
+            if (sel < 0.9f) round(g, r[0], r[1], r[2], r[3], alpha(cAccent, 0.06f + 0.14f * hv));
+            if (sel > 0.5f) round(g, r[0], r[1], r[2], r[3], alpha(cAccent, 0.95f));
+            text(g, TABS[i], r[0] + 8, r[1] + 6, mix(TEXT, cBg, sel));
+        }
+    }
+
+    private void drawDock(GuiGraphics g) {
+        int dockW = TABS.length * 38 - 8;
+        round(g, dockX(0) - 10, dockY() - 8, dockW + 20, 46, mix(cCard, cBg, 0.3f));
+        for (int i = 0; i < TABS.length; i++) {
+            float hv = ease("dock" + i, hov("tab" + i) ? 1 : 0, 16);
+            float sel = ease("tabsel" + i, tab == i ? 1 : 0, 14);
+            int grow = Math.round(8 * hv);
+            int x = dockX(i) - grow / 2, y = dockY() - grow, w = 30 + grow;
+            round(g, x, y, w, w, mix(mix(cCard, TEXT, 0.06f), cAccent, 0.15f + 0.8f * sel));
+            icon(g, i, x + (w - 14) / 2, y + (w - 14) / 2, mix(TEXT, cBg, sel), mix(mix(cCard, TEXT, 0.06f), cAccent, 0.15f + 0.8f * sel));
+        }
+    }
+
+    private void drawRadialButton(GuiGraphics g) {
+        float hv = ease("menuhov", hov("menu") ? 1 : 0, 14);
+        round(g, px + 8, py + 8, 20, 20, mix(cCard, cAccent, 0.25f + 0.5f * hv + (radialOpen ? 0.3f : 0f)));
+        disc(g, px + 18, py + 18, 5, cBg);
+        disc(g, px + 18, py + 18, 3, cAccent2);
+    }
+
+    private void drawWheel(GuiGraphics g) {
+        g.fill(cx - 2, top - 2, cx + cw + 2, bottom + 2, alpha(0x000000, 0.65f));
+        int ccx = cx + cw / 2, ccy = top + (bottom - top) / 2;
+        disc(g, ccx, ccy, 22, alpha(cAccent, 0.18f));
+        disc(g, ccx, ccy, 6, cAccent);
+        for (int i = 0; i < TABS.length; i++) {
+            int[] p = wheelPos(i);
+            float hv = ease("wheel" + i, hov("tab" + i) ? 1 : 0, 16);
+            float sel = tab == i ? 1f : 0f;
+            int r = 16 + Math.round(3 * hv);
+            disc(g, p[0], p[1], r + 3, alpha(cAccent, 0.2f + 0.3f * hv));
+            disc(g, p[0], p[1], r, mix(mix(cCard, TEXT, 0.08f), cAccent, 0.2f + 0.7f * Math.max(sel, hv)));
+            icon(g, i, p[0] - 7, p[1] - 7, mix(TEXT, cBg, Math.max(sel, hv)), mix(cCard, cAccent, Math.max(sel, hv)));
+            text(g, TABS[i], p[0] - font.width(TABS[i]) / 2, p[1] + r + 6, TEXT);
+        }
+        String hint = "Tab to close";
+        text(g, hint, ccx - font.width(hint) / 2, bottom - 12, muted());
+    }
+
+    private void tooltip(GuiGraphics g, String s, int x, int y, boolean centered) {
+        int w = font.width(s) + 10;
+        if (centered) x -= w / 2;
+        round(g, x, y, w, 16, cLine);
+        round(g, x + 1, y + 1, w - 2, 14, cCard);
+        text(g, s, x + 5, y + 4, TEXT);
+    }
+
+    private void drawTooltips(GuiGraphics g) {
+        for (int i = 0; i < TABS.length; i++) {
+            if (!hov("tab" + i)) continue;
+            String s = TABS[i] + " [" + (i + 1) + "]";
+            if (layout == L_RAIL) {
+                int[] r = navRect(i);
+                tooltip(g, s, r[0] + r[2] + 6, r[1] + (r[3] - 16) / 2, false);
+            } else if (layout == L_DOCK) {
+                tooltip(g, s, dockX(i) + 15, dockY() - 26, true);
+            }
+        }
+    }
+
+    private void drawHeader(GuiGraphics g, int mx, int my, float partial) {
+        float e = eo(tabT);
+        int tx = cx + (layout == L_RADIAL ? 26 : 0) + (int) ((1f - e) * 14f * tabDir);
+        g.drawString(font, Component.literal(TABS[tab]).withStyle(ChatFormatting.BOLD), tx, py + 12, alpha(TEXT, Math.max(0.08f, e)), false);
+
+        if (searchActive && search != null) {
+            boolean focus = search.isFocused();
+            round(g, searchX - 1, py + 7, searchW + 2, 22, focus ? mix(cCard, cAccent, 0.6f) : cLine);
+            round(g, searchX, py + 8, searchW, 20, mix(cCard, cBg, 0.2f));
+            disc(g, searchX + 10, py + 17, 4, muted());
+            disc(g, searchX + 10, py + 17, 2, mix(cCard, cBg, 0.2f));
+            g.fill(searchX + 13, py + 20, searchX + 15, py + 22, muted());
+            search.render(g, mx, my, partial);
+        }
+
+        round(g, stX, py + 8, stW, 20, mix(cCard, cBg, 0.2f));
+        disc(g, stX + 10, py + 18, 3, pillColor());
+        text(g, pillLabel(), stX + 18, py + 14, mix(TEXT, cBg, 0.15f));
+
+        String name = Minecraft.getInstance().getUser().getName();
+        round(g, nameX, py + 8, nameW, 20, mix(cCard, cBg, 0.2f));
+        try { PlayerFaceRenderer.draw(g, skin(), nameX + 3, py + 10, 16); } catch (Exception ignored) { }
+        text(g, name, nameX + 24, py + 14, TEXT);
+
+        boolean hc = hov("close");
+        round(g, closeX, py + 10, 16, 16, hc ? RED : cCard);
+        text(g, "x", closeX + 5, py + 14, TEXT);
+    }
+
+    private void drawBottom(GuiGraphics g) {
+        String msg = status.getString();
+        if (msg.isEmpty()) msg = tab == T_SKIN ? "Click a skin to load it  |  click the head or preview to pick a color" : "1-9 tabs  |  L layout  |  Ctrl+K search";
+        text(g, fit(msg, cw - applyW - 16), cx + 2, applyY + 8, muted());
+        float h = ease("applyhov", hov("apply") ? 1 : 0, 14);
+        round(g, applyX - 1, applyY - 1, applyW + 2, applyH + 2, alpha(cAccent2, 0.25f * h));
+        round(g, applyX, applyY, applyW, applyH, mix(cAccent, cAccent2, h * 0.5f));
+        String a = applyLabel();
+        bold(g, a, applyX + (applyW - font.width(a) - 1) / 2, applyY + 8, cBg);
+    }
+
+    // ---- trims tab ----
+    private void drawTrims(GuiGraphics g, int mx, int my) {
+        int lw = trimLeftW(), h = bottom - top, dx = cx - baseCx;
+        int trimC = MAT_COL[material];
+
+        card(g, cx, top, lw, h);
+        int x1 = prevBox[0] + dx, y1 = prevBox[1], x2 = prevBox[2] + dx, y2 = prevBox[3];
+        if (dummy != null && !worldMissing && Minecraft.getInstance().level != null) {
+            float yaw = Math.max(-1.2f, Math.min(1.2f, viewYaw + (sway && !prevDrag ? 0.45f * (float) Math.sin(time * 0.9f) : 0f)));
+            float cxm = (x1 + x2) / 2f, cym = (y1 + y2) / 2f;
+            float vx = followCursor ? mx : cxm - 40f * (float) Math.tan(yaw);
+            float vy = followCursor ? my : cym - 12f;
+            int scale = Math.max(20, (int) ((y2 - y1) * 0.42f));
+            try {
+                InventoryScreen.renderEntityInInventoryFollowsMouse(g, x1, y1, x2, y2, scale, 0.0625F, vx, vy, dummy);
+            } catch (Exception ex) {
+                text(g, "Preview unavailable", x1 + 8, y1 + 8, RED);
+            }
+        } else {
+            String m1 = "Join a world to";
+            String m2 = "see the 3D preview";
+            text(g, m1, x1 + (x2 - x1 - font.width(m1)) / 2, y1 + (y2 - y1) / 2 - 8, muted());
+            text(g, m2, x1 + (x2 - x1 - font.width(m2)) / 2, y1 + (y2 - y1) / 2 + 4, muted());
+        }
+        text(g, fit(ARMOR_NAMES[armorType] + " | " + PATTERNS[pattern] + " | " + MATS[material], lw - 12), cx + 6, top + h - 26, TEXT);
+        text(g, followCursor ? "Follows your cursor" : "Drag to rotate", cx + 6, top + h - 14, muted());
+
+        int x0 = baseCx + trimLeftW() + 8 + dx;
+        text(g, "Armor", x0, yLA, muted());
+        for (int i = 0; i < rArmor.size(); i++) chip(g, "arm" + i, shifted(rArmor.get(i), dx), ARMOR_NAMES[i], armorType == i ? 1 : 0, cAccent);
+        text(g, "Pieces", x0, yLB, muted());
+        for (int i = 0; i < rPiece.size(); i++) {
+            float on = i < 4 ? (pieceOn[i] ? 1 : 0) : (i == 4 && showcase ? 1 : 0);
+            chip(g, "pc" + i, shifted(rPiece.get(i), dx), PIECE_NAMES[i], on, i < 4 ? cAccent : cAccent2);
+        }
+        text(g, "Material  " + MATS[material], x0, yLC, muted());
+        for (int i = 0; i < rMat.size(); i++) {
+            int[] r = shifted(rMat.get(i), dx);
+            float hv = ease("hmat" + i, hov("mat" + i) ? 1 : 0, 14), sv = ease("smat" + i, material == i ? 1 : 0, 14);
+            round(g, r[0] - 2, r[1] - 2, r[2] + 4, r[3] + 4, alpha(cAccent2, 0.9f * sv + 0.25f * hv));
+            round(g, r[0], r[1], r[2], r[3], MAT_COL[i]);
+        }
+        text(g, searchText.isEmpty() ? "Pattern" : "Pattern  (filter: " + fit(searchText, 80) + ")", x0, yLD, muted());
+        if (rPat.isEmpty()) text(g, "No pattern matches", x0, yLD + 14, muted());
+        for (int k = 0; k < rPat.size(); k++) {
+            int[] r = shifted(rPat.get(k), dx);
+            if (r[1] + r[3] > bottom) continue;
+            int pi = patIdx.get(k);
+            chip(g, "pat" + k, r, PATTERNS[pi], pattern == pi ? 1 : 0, trimC);
+        }
+    }
+
+    private static int[] shifted(int[] r, int dx) { return new int[]{r[0] + dx, r[1], r[2], r[3]}; }
+
+    // ---- wardrobe tab ----
+    private void drawWardrobe(GuiGraphics g) {
+        chip(g, "wsave", new int[]{cx + 6, top, 104, 16}, "Save current set", 0, cAccent);
+        int pages = Math.max(1, (wardrobe.size() + wRows - 1) / wRows);
+        text(g, wardrobe.size() + " saved", cx + 118, top + 4, muted());
+        chip(g, "wprev", new int[]{cx + cw - 44, top, 18, 16}, "<", 0, cAccent);
+        chip(g, "wnext", new int[]{cx + cw - 24, top, 18, 16}, ">", 0, cAccent);
+        String pg = (wPage + 1) + "/" + pages;
+        text(g, pg, cx + cw - 50 - font.width(pg), top + 4, muted());
+
+        card(g, cx, top + 20, cw, bottom - top - 20);
+        if (wardrobe.isEmpty()) {
+            text(g, "Nothing saved yet. Pick armor, material and pattern in Trims, then save the set here.", cx + 12, top + 32, muted());
+            return;
+        }
+        for (int i = 0; i < wRows; i++) {
+            int idx = wPage * wRows + i;
+            if (idx >= wardrobe.size()) break;
+            int[] e = entry(wardrobe.get(idx));
+            if (e == null) continue;
+            int ry = top + 22 + i * 22;
+            int dx = (int) ((1f - stag(i)) * 24 * tabDir);
+            float hv = ease("wrowhov" + i, hov("wrow" + i) ? 1 : 0, 14);
+            if (hv > 0.02f) round(g, cx + 6 + dx, ry, cw - 12, 20, alpha(cAccent, 0.12f * hv));
+            round(g, cx + 12 + dx, ry + 4, 12, 12, MAT_COL[e[1]]);
+            bold(g, fit(PATTERNS[e[2]] + " / " + MATS[e[1]], cw - 190), cx + 30 + dx, ry + 6, TEXT);
+            StringBuilder pcs = new StringBuilder();
+            String[] pn = {"H", "C", "L", "B"};
+            for (int k = 0; k < 4; k++) pcs.append((e[3] >> k & 1) != 0 ? pn[k] : "-");
+            text(g, ARMOR_NAMES[e[0]] + "  " + pcs, cx + cw - 150 + dx, ry + 6, muted());
+            boolean dh = hov("wdel" + i);
+            round(g, cx + cw - 6 - 22 + dx, ry, 22, 20, dh ? RED : alpha(RED, 0.25f));
+            text(g, "x", cx + cw - 6 - 14 + dx, ry + 6, TEXT);
+        }
+    }
+
+    // ---- skin tab ----
+    private void drawSkin(GuiGraphics g) {
+        if (paintOn) { drawPaint(g); return; }
+        int dx = cx - baseCx, h = bottom - top;
+
+        // skin list
+        card(g, cx, top, sListW, h);
+        bold(g, "Skins", cx + 8, top + 6, TEXT);
+        int pages = Math.max(1, (files.size() + sRows - 1) / sRows);
+        String pg = (sPage + 1) + "/" + pages;
+        text(g, pg, cx + sListW - 50 - font.width(pg), top + 6, muted());
+        chip(g, "sprev", new int[]{cx + sListW - 46, top + 2, 18, 16}, "<", 0, cAccent);
+        chip(g, "snext", new int[]{cx + sListW - 24, top + 2, 18, 16}, ">", 0, cAccent);
+        if (files.isEmpty()) {
+            text(g, fit("No PNGs yet. Put 64x64", sListW - 16), cx + 8, top + 26, muted());
+            text(g, fit("skins in skin-studio,", sListW - 16), cx + 8, top + 38, muted());
+            text(g, fit("then press Refresh.", sListW - 16), cx + 8, top + 50, muted());
+        }
+        int selFg = lum(cAccent) > 140 ? 0xFF111111 : 0xFFFFFFFF;
+        for (int i = 0; i < sRows; i++) {
+            int idx = sPage * sRows + i;
+            if (idx >= files.size()) break;
+            SkinFile f = files.get(idx);
+            int ry = top + 22 + i * 20, rdx = (int) ((1f - stag(i)) * 16 * tabDir);
+            float hv = ease("srowhov" + i, hov("srow" + i) ? 1 : 0, 14);
+            boolean sel = idx == selIdx;
+            if (sel) round(g, cx + 4 + rdx, ry, sListW - 8, 18, alpha(cAccent, 0.9f));
+            else if (hv > 0.02f) round(g, cx + 4 + rdx, ry, sListW - 8, 18, alpha(cAccent, 0.15f * hv));
+            if (thumbId != null && idx < thumbN) g.blit(RenderPipelines.GUI_TEXTURED, thumbId, cx + 7 + rdx, ry + 1, 0f, idx * 16f, 16, 16, 16, 16 * thumbN);
+            int fg = f.px() == null ? RED : sel ? selFg : TEXT;
+            text(g, fit(f.name(), sListW - 38), cx + 28 + rdx, ry + 5, fg);
+        }
+
+        // front / back preview
+        int pvW = 16 * pvScale, pvH = 32 * pvScale, ox = pvX + dx, pvY = top + 3;
+        card(g, ox - 3, top, 2 * pvW + 8 + 6, pvH + 20);
+        if (pvId[0] != null) g.blit(RenderPipelines.GUI_TEXTURED, pvId[0], ox, pvY, 0f, 0f, pvW, pvH, pvW, pvH);
+        if (pvId[1] != null) g.blit(RenderPipelines.GUI_TEXTURED, pvId[1], ox + pvW + 8, pvY, 0f, 0f, pvW, pvH, pvW, pvH);
+        text(g, "Front", ox + (pvW - font.width("Front")) / 2, pvY + pvH + 4, muted());
+        text(g, "Back", ox + pvW + 8 + (pvW - font.width("Back")) / 2, pvY + pvH + 4, muted());
+
+        // head zoom + info
+        int x = ctlX + dx, hs = 8 * HEAD_Z;
+        card(g, x - 2, top, hs + 4, hs + 4);
+        if (headId != null) g.blit(RenderPipelines.GUI_TEXTURED, headId, x, top + 2, 0f, 0f, hs, hs, hs, hs);
+        int ix = x + hs + 8, iw = ctlW - hs - 8;
+        bold(g, fit(skinName, iw), ix, top + 4, TEXT);
+        text(g, fit(skinDirty ? "Recolored, not saved" : "Original colors", iw), ix, top + 17, skinDirty ? AMBER : muted());
+        text(g, fit("Click the head or", iw), ix, top + 30, muted());
+        text(g, fit("preview to pick a color", iw), ix, top + 41, muted());
+
+        // sliders
+        for (int i = 0; i < 4; i++) {
+            int[] b = skinBar(i);
+            int bx = b[0] + dx, by = b[1];
+            text(g, RC_NAMES[i], x, by, muted());
+            float t = (rc[i] - RC_MIN[i]) / (float) (RC_MAX[i] - RC_MIN[i]);
+            boolean dim = i == 3 && !pickMode;
+            g.fill(bx, by, bx + b[2], by + b[3], mix(cCard, cBg, 0.6f));
+            g.fill(bx, by, bx + Math.round(b[2] * t), by + b[3], dim ? mix(cCard, TEXT, 0.2f) : cAccent);
+            int kx = bx + Math.round((b[2] - 3) * t);
+            g.fill(kx, by - 1, kx + 3, by + b[3] + 1, 0xFFFFFFFF);
+            String val = i == 0 ? rc[i] + "\u00B0" : i == 2 ? (rc[i] > 0 ? "+" : "") + rc[i] : rc[i] + "%";
+            text(g, val, bx + b[2] + 6, by, dim ? muted() : TEXT);
+        }
+
+        // target
+        int w2 = (ctlW - 20) / 2;
+        chip(g, "smode0", new int[]{x, yMode(), w2, 16}, "Whole skin", pickMode ? 0 : 1, cAccent);
+        chip(g, "smode1", new int[]{x + w2 + 4, yMode(), w2, 16}, "Picked color", pickMode ? 1 : 0, cAccent);
+        round(g, x + 2 * w2 + 8, yMode() + 2, 12, 12, cLine);
+        g.fill(x + 2 * w2 + 9, yMode() + 3, x + 2 * w2 + 19, yMode() + 13, pickColor);
+
+        // actions
+        int bw = (ctlW - 4) / 2;
+        for (int i = 0; i < SKIN_BTNS.length; i++) {
+            chip(g, "sb" + i, new int[]{x + (i % 2) * (bw + 4), yBtn() + (i / 2) * 22, bw, 18}, SKIN_BTNS[i], 0, cAccent);
+        }
+        chip(g, "sdraw", new int[]{x, Math.min(yBtn() + 66, bottom - 20), ctlW, 18}, "Draw on skin", 0, cAccent);
+    }
+
+    // ---- discord tab ----
+    private void field(GuiGraphics g, EditBox b, int x, int y, int w, String label, int mx, int my) {
+        text(g, label, x, y - 10, muted());
+        round(g, x, y, w, 18, b.isFocused() ? mix(cCard, cAccent, 0.6f) : cLine);
+        round(g, x + 1, y + 1, w - 2, 16, mix(cCard, cBg, 0.25f));
+        b.setX(x + 5);
+        b.setY(y + 4);
+        b.render(g, mx, my, partialTick);
+    }
+
+    private void drawDiscord(GuiGraphics g, int mx, int my) {
+        int lw = discLeftW(), fx0 = cx + 12, fw = lw - 24;
+        card(g, cx, top, lw, bottom - top);
+        bold(g, "Discord bot", cx + 10, top + 7, TEXT);
+        boolean on = DiscordBot.isRunning();
+        disc(g, cx + lw - 14, top + 11, 3, on ? GREEN : muted());
+        text(g, fit(DiscordBot.status(), lw - 24), cx + 10, top + 19, on ? GREEN : muted());
+        if (tokenBox != null) field(g, tokenBox, fx0, top + 43, fw, "Bot token (kept on this PC)", mx, my);
+        if (chanBox != null) field(g, chanBox, fx0, top + 73, fw, "Channel ID", mx, my);
+        if (userBox != null) field(g, userBox, fx0, top + 103, fw, "Only obey this user ID (optional)", mx, my);
+        optionRow(g, 5, cx + 6, top + 123, lw - 12, "Listen for !commands", null, DiscordBot.listen);
+        optionRow(g, 6, cx + 6, top + 141, lw - 12, "Post saved skins", null, DiscordBot.autoPost);
+        int bw = (lw - 24 - 8) / 3, by = top + 163;
+        chip(g, "dcon", new int[]{fx0, by, bw, 18}, on ? "Disconnect" : "Connect", on ? 1 : 0, RED);
+        chip(g, "dtrim", new int[]{fx0 + bw + 4, by, bw, 18}, "Send trim", 0, cAccent);
+        chip(g, "dskin", new int[]{fx0 + 2 * (bw + 4), by, bw, 18}, "Send skin", 0, cAccent);
+        optionRow(g, 11, cx + 6, top + 185, lw - 12, "Show Discord chat in game", null, DiscordBot.relay);
+        if (chatBox != null) field(g, chatBox, fx0, top + 221, fw - 52, "Message to Discord (Enter sends)", mx, my);
+        chip(g, "dchat", new int[]{fx0 + fw - 48, top + 221, 48, 18}, "Send", 0, cAccent);
+
+        int rx = cx + lw + 8, rw = cw - lw - 8, rh = bottom - top;
+        card(g, rx, top, rw, rh);
+        bold(g, "Activity", rx + 10, top + 7, TEXT);
+        List<String> log = DiscordBot.log();
+        int lines = Math.max(1, (rh - 70) / 10);
+        int startIdx = Math.max(0, log.size() - lines);
+        if (log.isEmpty()) text(g, "Nothing yet", rx + 10, top + 22, muted());
+        for (int i = startIdx; i < log.size(); i++) text(g, fit(log.get(i), rw - 20), rx + 10, top + 22 + (i - startIdx) * 10, TEXT);
+        int hy = top + rh - 46;
+        text(g, "Commands in the channel:", rx + 10, hy, muted());
+        text(g, fit("!trim  !skin  !random  !help", rw - 20), rx + 10, hy + 11, TEXT);
+        text(g, fit("!set <armor> <pattern> <material>", rw - 20), rx + 10, hy + 22, TEXT);
+        text(g, fit("Enable Message Content Intent on the bot", rw - 20), rx + 10, hy + 33, muted());
+    }
+
+    // ---- chat tab ----
+    private void drawChat(GuiGraphics g, int mx, int my) {
+        int lw = discLeftW(), fx0 = cx + 12, fw = lw - 24;
+        card(g, cx, top, lw, bottom - top);
+        bold(g, "Minecraft chat bridge", cx + 10, top + 7, TEXT);
+        if (chatChanBox != null) field(g, chatChanBox, fx0, top + 34, fw, "Chat channel ID", mx, my);
+        optionRow(g, 12, cx + 6, top + 60, lw - 12, "Log all chat to Discord", null, DiscordBot.logChat);
+        optionRow(g, 13, cx + 6, top + 78, lw - 12, "Allow !say from Discord", null, DiscordBot.sayOn);
+        optionRow(g, 14, cx + 6, top + 96, lw - 12, "Hourly chat file (in game only)", null, DiscordBot.hourly);
+        optionRow(g, 15, cx + 6, top + 114, lw - 12, "Show player heads in Discord", null, DiscordBot.chatEmbeds);
+        int bw = (fw - 4) / 2;
+        chip(g, "clog", new int[]{fx0, top + 142, bw, 18}, "Send log now", 0, cAccent);
+        chip(g, "ctest", new int[]{fx0 + bw + 4, top + 142, bw, 18}, "Test message", 0, cAccent);
+        boolean on = DiscordBot.isRunning();
+        text(g, fit(on ? "Bot is online" : "Connect the bot on the Discord tab first", lw - 20), cx + 10, top + 168, on ? GREEN : muted());
+
+        int rx = cx + lw + 8, rw = cw - lw - 8, rh = bottom - top;
+        card(g, rx, top, rw, rh);
+        bold(g, "Recent chat", rx + 10, top + 7, TEXT);
+        List<ChatBridge.Line> lines = ChatBridge.recent();
+        int n = Math.max(1, (rh - 64) / 10);
+        int start = Math.max(0, lines.size() - n);
+        if (lines.isEmpty()) text(g, "Nothing yet", rx + 10, top + 22, muted());
+        for (int i = start; i < lines.size(); i++) {
+            ChatBridge.Line l = lines.get(i);
+            int ly = top + 22 + (i - start) * 10;
+            if (l.id() != null) {
+                try { PlayerFaceRenderer.draw(g, skinFor(l.id()), rx + 10, ly, 8); } catch (Exception ignored) { }
+            }
+            text(g, fit(l.plain(), rw - 31), rx + 21, ly, l.id() != null ? TEXT : muted());
+        }
+        int hy = top + rh - 34;
+        text(g, fit("In the chat channel: !say <message>", rw - 20), rx + 10, hy, muted());
+        text(g, fit("says it in game as you (no / commands).", rw - 20), rx + 10, hy + 11, muted());
+        text(g, fit("Set a user ID on the Discord tab for safety.", rw - 20), rx + 10, hy + 22, muted());
+    }
+
+    // ---- settings ----
+    private void drawSettings(GuiGraphics g) {
+        int chipX = cx + 8;
+        for (int i = 0; i < SET_CHIPS.length; i++) {
+            int w = font.width(SET_CHIPS[i]) + 14;
+            float sel = ease("schip" + i, setChip == i ? 1 : 0, 14);
+            round(g, chipX, top, w, 16, mix(cCard, cAccent, 0.15f + 0.8f * sel));
+            text(g, SET_CHIPS[i], chipX + 7, top + 4, mix(TEXT, cBg, sel));
+            chipX += w + 4;
+        }
+        int y0 = top + 22;
+        if (setChip == 0) drawLayoutPage(g, y0);
+        else if (setChip == 1) drawThemePage(g, y0);
+        else if (setChip == 2) drawDisplayPage(g, y0);
+        else drawColorsPage(g, y0);
+    }
+
+    private void layoutPreview(GuiGraphics g, int i, int x, int y, int w, int h, int accent) {
+        int body = mix(cCard, cBg, 0.55f), bar = mix(cCard, TEXT, 0.22f);
+        round(g, x, y, w, h, body);
+        switch (i) {
+            case L_CLASSIC -> {
+                g.fill(x + 2, y + 2, x + 2 + w / 3, y + h - 2, bar);
+                for (int k = 0; k < 3; k++) g.fill(x + 4, y + 5 + k * 5, x + w / 3, y + 7 + k * 5, k == 0 ? accent : mix(bar, TEXT, 0.25f));
+            }
+            case L_RAIL -> {
+                g.fill(x + 2, y + 2, x + 8, y + h - 2, bar);
+                for (int k = 0; k < 3; k++) g.fill(x + 3, y + 5 + k * 5, x + 7, y + 7 + k * 5, k == 0 ? accent : mix(bar, TEXT, 0.25f));
+            }
+            case L_TABS -> {
+                for (int k = 0; k < 3; k++) round(g, x + 3 + k * 12, y + 3, 10, 4, k == 0 ? accent : bar);
+            }
+            case L_DOCK -> {
+                for (int k = 0; k < 4; k++) round(g, x + w / 2 - 14 + k * 8, y + h - 7, 6, 4, k == 1 ? accent : bar);
+            }
+            default -> {
+                int ccx = x + w / 2, ccy = y + h / 2, r = Math.max(4, Math.min(w, h) / 3);
+                for (int k = 0; k < 5; k++) {
+                    double a = -Math.PI / 2 + k * 2 * Math.PI / 5;
+                    disc(g, ccx + (int) Math.round(r * Math.cos(a)), ccy + (int) Math.round(r * Math.sin(a)), 2, k == 0 ? accent : bar);
+                }
+            }
+        }
+    }
+
+    private void drawLayoutPage(GuiGraphics g, int y0) {
+        text(g, "Where the navigation lives. Press L anywhere to cycle.", cx + 4, y0 - 2, muted());
+        int gw = layCardW(), gh = layCardH(), yy = y0 + 10;
+        for (int i = 0; i < LAYOUTS.length; i++) {
+            int x = cx + 6 + i * (gw + 6), y = yy + (int) ((1f - stag(i)) * 12f);
+            boolean sel = layout == i;
+            float hv = ease("layhov" + i, hov("lay" + i) ? 1 : 0, 14), sv = ease("laysel" + i, sel ? 1 : 0, 12);
+            round(g, x - 1, y - 1, gw + 2, gh - 8, mix(cLine, cAccent, 0.25f * hv + 0.85f * sv));
+            round(g, x, y, gw, gh - 10, cCard);
+            layoutPreview(g, i, x + 5, y + 5, gw - 10, Math.max(14, gh - 10 - 40), cAccent);
+            bold(g, fit(LAYOUTS[i], gw - 24), x + 6, y + gh - 10 - 32, mix(TEXT, cAccent, sv * 0.5f));
+            text(g, fit(LAYOUT_SUB[i], gw - 10), x + 6, y + gh - 10 - 20, muted());
+            if (sv > 0.5f) { disc(g, x + gw - 10, y + gh - 10 - 28, 5, cAccent); g.fill(x + gw - 13, y + gh - 10 - 28, x + gw - 11, y + gh - 10 - 26, cBg); g.fill(x + gw - 11, y + gh - 10 - 26, x + gw - 7, y + gh - 10 - 25, cBg); }
+        }
+    }
+
+    private void drawThemePage(GuiGraphics g, int y0) {
+        int cellH = themeCellH(), gw = (cw - 5 * 6) / 4;
+        for (int i = 0; i < Theme.ALL.size(); i++) {
+            Theme t = Theme.ALL.get(i);
+            int x = cx + 6 + (i % 4) * (gw + 6), y = y0 + (i / 4) * (cellH + 4) + (int) ((1f - stag(i / 4 + i % 4)) * 12f);
+            boolean sel = t.id().equals(Config.theme);
+            float hv = ease("thhov" + i, hov("th" + i) ? 1 : 0, 14), sv = ease("thsel" + i, sel ? 1 : 0, 12);
+            round(g, x - 1, y - 1, gw + 2, cellH + 2, mix(t.line(), t.accent(), 0.25f * hv + 0.85f * sv));
+            round(g, x, y, gw, cellH, t.card());
+            bold(g, fit(t.name(), gw - 30), x + 6, y + 5, TEXT);
+            if (cellH >= 34) text(g, fit(t.sub(), gw - 12), x + 6, y + 16, mix(TEXT, t.card(), 0.5f));
+            g.fill(x + 6, y + cellH - 5, x + gw - 6, y + cellH - 3, t.accent());
+            g.fill(x + gw / 2, y + cellH - 5, x + gw - 6, y + cellH - 3, t.accent2());
+            disc(g, x + gw - 10, y + 8, 2, t.accent()); disc(g, x + gw - 18, y + 8, 2, t.accent2());
+            if (sv > 0.5f) { disc(g, x + gw - 10, y + cellH - 11, 5, t.accent()); g.fill(x + gw - 13, y + cellH - 11, x + gw - 11, y + cellH - 9, t.bg()); g.fill(x + gw - 11, y + cellH - 9, x + gw - 7, y + cellH - 8, t.bg()); }
+        }
+    }
+
+    private void drawDisplayPage(GuiGraphics g, int y0) {
+        int dw = dispCardW(), ch = 136;
+        int rx = cx + dw + 8;
+        int la = (int) ((1f - stag(0)) * 14f), lb = (int) ((1f - stag(1)) * 14f);
+
+        card(g, cx, y0 + la, dw, ch);
+        bold(g, "Display and effects", cx + 8, y0 + 7 + la, TEXT);
+        optionRow(g, 0, cx + 6, y0 + 22 + la, dw - 12, "Animations", null, Config.anim);
+        optionRow(g, 1, cx + 6, y0 + 40 + la, dw - 12, "Particle amount", INTENSITY[Config.intensity], true);
+        optionRow(g, 2, cx + 6, y0 + 58 + la, dw - 12, "Glow pulse", null, Config.glow);
+        optionRow(g, 7, cx + 6, y0 + 76 + la, dw - 12, "Glow strength", GLOWS[glowStrong ? 1 : 0], true);
+        optionRow(g, 8, cx + 6, y0 + 94 + la, dw - 12, "Animation speed", SPEED[speedIdx], true);
+        optionRow(g, 9, cx + 6, y0 + 112 + la, dw - 12, "Panel style", STYLE[styleIdx], true);
+
+        card(g, rx, y0 + lb, dw, ch);
+        bold(g, "3D preview", rx + 8, y0 + 7 + lb, TEXT);
+        optionRow(g, 3, rx + 6, y0 + 22 + lb, dw - 12, "Idle sway", null, sway);
+        optionRow(g, 4, rx + 6, y0 + 40 + lb, dw - 12, "Follow cursor", null, followCursor);
+        bold(g, "Integrations", rx + 8, y0 + 64 + lb, TEXT);
+        text(g, fit(ESSENTIAL ? "Essential: installed" : "Essential: not installed", dw - 16), rx + 8, y0 + 78 + lb, ESSENTIAL ? GREEN : muted());
+        text(g, fit("Discord: " + DiscordBot.status(), dw - 16), rx + 8, y0 + 90 + lb, DiscordBot.isRunning() ? GREEN : muted());
+        text(g, fit("Skins: skin-studio folder", dw - 16), rx + 8, y0 + 102 + lb, muted());
+    }
+
+    private void drawColorsPage(GuiGraphics g, int y0) {
+        int dx = cx - baseCx, half = (cw - 16) / 2;
+        card(g, cx, y0, cw, 126);
+        optionRow(g, 10, cx + 6, y0 + 6, cw - 12, "Use custom colors instead of the theme", null, customOn);
+        String[] titles = {"Accent", "Accent 2"};
+        for (int col = 0; col < 2; col++) {
+            int gx = cx + 8 + col * half;
+            text(g, titles[col], gx, y0 + 32, muted());
+            int cur = col == 0 ? customAccent : customAccent2;
+            round(g, gx + 50, y0 + 28, 22, 14, cur);
+            text(g, String.format("#%06X", cur & 0xFFFFFF), gx + 78, y0 + 32, TEXT);
+            for (int ch = 0; ch < 3; ch++) {
+                int[] b = colBar(col, ch);
+                int bx = b[0] + dx, by = b[1], v = cur >> (16 - 8 * ch) & 255;
+                text(g, "RGB".substring(ch, ch + 1), bx - 12, by + 1, muted());
+                g.fill(bx, by, bx + b[2], by + b[3], mix(cCard, cBg, 0.6f));
+                g.fill(bx, by, bx + Math.round(b[2] * v / 255f), by + b[3], ch == 0 ? 0xFFE0564F : ch == 1 ? 0xFF58D26F : 0xFF378ADD);
+                int kx = bx + Math.round((b[2] - 3) * v / 255f);
+                g.fill(kx, by - 1, kx + 3, by + b[3] + 1, 0xFFFFFFFF);
+            }
+        }
+        chip(g, "ccreset", new int[]{cx + cw - 78, y0 + 104, 70, 16}, "Reset", 0, cAccent);
+        text(g, customOn ? "Custom colors are on" : "Turn on to override the theme accent", cx + 8, y0 + 108, muted());
+    }
+
+    private void optionRow(GuiGraphics g, int i, int x, int y, int w, String label, String value, boolean on) {
+        float hv = ease("opthov" + i, hov("opt" + i) ? 1 : 0, 14);
+        round(g, x, y, w, 16, alpha(cAccent, 0.06f + 0.12f * hv));
+        text(g, label, x + 8, y + 4, TEXT);
+        if (value != null) {
+            text(g, value, x + w - 8 - font.width(value), y + 4, cAccent2);
+        } else {
+            float sw = ease("optsw" + i, on ? 1 : 0, 16);
+            toggleSwitch(g, x + w - 8 - 26, y + 2, sw);
+        }
+    }
+
+    @Override
+    public void onClose() {
+        Config.save();
+        savePrefs();
+        Minecraft.getInstance().setScreen(parent);
     }
 }
