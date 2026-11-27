@@ -170,7 +170,7 @@ final class ChatBridge {
     }
 
     /** The skin's texture hash from the profile's signed "textures" property (works for any server, also skin-changing plugins). */
-    private static String hashFromProfile(GameProfile profile) {
+    static String hashFromProfile(GameProfile profile) {
         try {
             Object props = null;
             for (String name : new String[]{"properties", "getProperties"}) {
@@ -230,6 +230,20 @@ final class ChatBridge {
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    /** Full skin image for a texture hash (local copy first, then the texture server). Blocking: call off the game thread. */
+    static BufferedImage skinImage(String hash) {
+        try {
+            Path file = FabricLoader.getInstance().getGameDir().resolve("assets").resolve("skins").resolve(hash.substring(0, 2)).resolve(hash);
+            if (Files.exists(file)) { BufferedImage i = ImageIO.read(file.toFile()); if (i != null) return i; }
+            HttpResponse<byte[]> res = WEB.send(HttpRequest.newBuilder(URI.create("https://textures.minecraft.net/texture/" + hash))
+                    .timeout(Duration.ofSeconds(10)).GET().build(), HttpResponse.BodyHandlers.ofByteArray());
+            if (res.statusCode() == 200) return ImageIO.read(new ByteArrayInputStream(res.body()));
+        } catch (Throwable t) {
+            // fall through
+        }
+        return null;
     }
 
     static List<Line> recent() {
