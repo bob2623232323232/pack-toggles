@@ -5,7 +5,20 @@ import com.google.gson.JsonObject;
 import com.mojang.authlib.GameProfile;
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.minecraft.client.Minecraft;
+import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.network.chat.Component;
+
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -15,6 +28,7 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.Deque;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -39,6 +53,9 @@ final class ChatBridge {
     private static final Deque<Line> OUT = new ArrayDeque<>();       // waiting to be posted to Discord
     private static final Deque<String> SINCE = new ArrayDeque<>();   // lines since the last hourly file
     private static final Deque<Line> RECENT = new ArrayDeque<>();    // shown on the Discord tab
+    /** Real face (from the skin the game downloaded) per player, sent to Discord as an attachment. */
+    private static final Map<UUID, byte[]> HEADS = new ConcurrentHashMap<>();
+    private static final Pattern SKIN_HASH = Pattern.compile("(?:skins/|texture/)([0-9a-fA-F]{40,64})");
     private static boolean started = false;
     private static long lastFile = System.currentTimeMillis();
 
@@ -67,6 +84,14 @@ final class ChatBridge {
         if (text == null || text.isBlank()) return;
         UUID id = sender != null ? sender.id() : null;
         String name = sender != null ? sender.name() : null;
+        if (id == null) {
+            PlayerInfo who = findSender(text);
+            if (who != null) { id = who.getProfile().id(); name = who.getProfile().name(); }
+        }
+        if (id != null && bot && DiscordBot.chatEmbeds && !HEADS.containsKey(id)) {
+            byte[] face = faceFor(id);
+            if (face != null) HEADS.put(id, face);
+        }
         long now = System.currentTimeMillis();
         Line line = new Line(now, new SimpleDateFormat("HH:mm:ss").format(new Date(now)), text.replace('\n', ' '), id, name);
         synchronized (LOCK) {
@@ -74,6 +99,52 @@ final class ChatBridge {
             while (RECENT.size() > 40) RECENT.removeFirst();
             if (bot && DiscordBot.logChat) { OUT.addLast(line); while (OUT.size() > 500) OUT.removeFirst(); }
             if (bot && (DiscordBot.hourly || DiscordBot.logChat)) { SINCE.addLast(line.plain()); while (SINCE.size() > MAX_LINES) SINCE.removeFirst(); }
+        }
+    }
+
+    /** Servers often send chat as plain text (no sender), so find the player whose name starts the line: "<Name> hi", "Name: hi", "[Rank] Name: hi". */
+    private static PlayerInfo findSender(String text) {
+        try {
+            Minecraft mc = Minecraft.getInstance();
+            if (mc.getConnection() == null) return null;
+            String head = text.length() > 48 ? text.substring(0, 48) : text;
+            PlayerInfo best = null;
+            for (PlayerInfo p : mc.getConnection().getOnlinePlayers()) {
+                String n = p.getProfile().name();
+                if (n == null || n.isEmpty() || (best != null && n.length() <= best.getProfile().name().length())) continue;
+                if (Pattern.compile("(^|[^A-Za-z0-9_])" + Pattern.quote(n) + "(?=\\s*[:>\\]\u00bb])").matcher(head).find()) best = p;
+            }
+            return best;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** Cuts the face (with the hat layer) out of the skin file the game downloaded and scales it up 8x. Null when it can't be found. */
+    private static byte[] faceFor(UUID id) {
+        try {
+            Minecraft mc = Minecraft.getInstance();
+            if (mc.getConnection() == null) return null;
+            PlayerInfo info = mc.getConnection().getPlayerInfo(id);
+            if (info == null) return null;
+            Matcher m = SKIN_HASH.matcher(String.valueOf(info.getSkin()));
+            if (!m.find()) return null;                       // default skin: the web head is used instead
+            String hash = m.group(1).toLowerCase(Locale.ROOT);
+            Path file = FabricLoader.getInstance().getGameDir().resolve("assets").resolve("skins").resolve(hash.substring(0, 2)).resolve(hash);
+            if (!Files.exists(file)) return null;
+            BufferedImage skin = ImageIO.read(file.toFile());
+            if (skin == null || skin.getWidth() < 64 || skin.getHeight() < 16) return null;
+            BufferedImage out = new BufferedImage(64, 64, BufferedImage.TYPE_INT_ARGB);
+            for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) {
+                int base = skin.getRGB(8 + x, 8 + y), hat = skin.getRGB(40 + x, 8 + y);
+                int px = (hat >>> 24) > 0 ? hat : base | 0xFF000000;
+                for (int dy = 0; dy < 8; dy++) for (int dx = 0; dx < 8; dx++) out.setRGB(x * 8 + dx, y * 8 + dy, px);
+            }
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            ImageIO.write(out, "png", bos);
+            return bos.toByteArray();
+        } catch (Throwable t) {
+            return null;
         }
     }
 
@@ -121,6 +192,7 @@ final class ChatBridge {
     /** Groups consecutive lines by sender into embeds with the sender's head as the author icon. */
     private static void flushEmbeds(List<Line> lines) throws Exception {
         JsonArray embeds = new JsonArray();
+        Map<String, byte[]> files = new LinkedHashMap<>();
         int total = 0, i = 0;
         while (i < lines.size()) {
             Line first = lines.get(i);
@@ -134,26 +206,35 @@ final class ChatBridge {
             }
             int size = sb.length() + 60;
             if (embeds.size() == 10 || (embeds.size() > 0 && total + size > MESSAGE_TEXT)) {
-                postEmbeds(embeds);
+                postEmbeds(embeds, files);
                 embeds = new JsonArray();
+                files = new LinkedHashMap<>();
                 total = 0;
             }
-            embeds.add(embed(first, sb.toString()));
+            embeds.add(embed(first, sb.toString(), files));
             total += size;
         }
-        if (embeds.size() > 0) postEmbeds(embeds);
+        if (embeds.size() > 0) postEmbeds(embeds, files);
     }
 
     private static boolean sameSender(Line a, Line b) {
         return Objects.equals(a.id(), b.id()) && Objects.equals(a.name(), b.name());
     }
 
-    private static JsonObject embed(Line who, String text) {
+    private static JsonObject embed(Line who, String text, Map<String, byte[]> files) {
         JsonObject e = new JsonObject();
         JsonObject author = new JsonObject();
         boolean player = who.id() != null || who.name() != null;
         author.addProperty("name", player && who.name() != null ? who.name() : "Server");
-        String icon = player ? headUrl(who) : null;
+        byte[] face = who.id() != null ? HEADS.get(who.id()) : null;
+        String icon;
+        if (face != null) {
+            String fn = "head-" + who.id().toString().replace("-", "") + ".png";
+            files.put(fn, face);
+            icon = "attachment://" + fn;
+        } else {
+            icon = player ? headUrl(who) : null;
+        }
         if (icon != null) author.addProperty("icon_url", icon);
         e.add("author", author);
         e.addProperty("description", "```\n" + text.stripTrailing() + "\n```");
@@ -170,8 +251,9 @@ final class ChatBridge {
 
     private static String clean(String s) { return s.replace("```", "'''"); }
 
-    private static void postEmbeds(JsonArray embeds) throws Exception {
-        DiscordBot.postChatEmbeds(embeds);
+    private static void postEmbeds(JsonArray embeds, Map<String, byte[]> files) throws Exception {
+        if (files.isEmpty()) DiscordBot.postChatEmbeds(embeds);
+        else DiscordBot.postChatEmbedsFiles(embeds, files);
         Thread.sleep(600);
     }
 
