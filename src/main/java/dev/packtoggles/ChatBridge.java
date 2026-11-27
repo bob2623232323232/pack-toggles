@@ -9,7 +9,17 @@ import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.network.chat.Component;
 
+import com.google.gson.JsonParser;
 import javax.imageio.ImageIO;
+import java.io.ByteArrayInputStream;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+import java.util.Base64;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
@@ -88,10 +98,7 @@ final class ChatBridge {
             PlayerInfo who = findSender(text);
             if (who != null) { id = who.getProfile().id(); name = who.getProfile().name(); }
         }
-        if (id != null && bot && DiscordBot.chatEmbeds && !HEADS.containsKey(id)) {
-            byte[] face = faceFor(id);
-            if (face != null) HEADS.put(id, face);
-        }
+        if (id != null && bot && DiscordBot.chatEmbeds) requestHead(id);
         long now = System.currentTimeMillis();
         Line line = new Line(now, new SimpleDateFormat("HH:mm:ss").format(new Date(now)), text.replace('\n', ' '), id, name);
         synchronized (LOCK) {
@@ -102,17 +109,23 @@ final class ChatBridge {
         }
     }
 
-    /** Servers often send chat as plain text (no sender), so find the player whose name starts the line: "<Name> hi", "Name: hi", "[Rank] Name: hi". */
+    /** Servers often send chat as plain text (no sender): the name is somewhere before the first ':' / '>' / '\u00bb', e.g. "<Name> hi", "[Rank] Name: hi". */
     private static PlayerInfo findSender(String text) {
         try {
             Minecraft mc = Minecraft.getInstance();
             if (mc.getConnection() == null) return null;
-            String head = text.length() > 48 ? text.substring(0, 48) : text;
+            int cut = -1;
+            for (int i = 0; i < Math.min(text.length(), 70); i++) {
+                char ch = text.charAt(i);
+                if (ch == ':' || ch == '>' || ch == '\u00bb') { cut = i; break; }
+            }
+            if (cut < 1) return null;
+            String prefix = text.substring(0, cut);
             PlayerInfo best = null;
             for (PlayerInfo p : mc.getConnection().getOnlinePlayers()) {
                 String n = p.getProfile().name();
                 if (n == null || n.isEmpty() || (best != null && n.length() <= best.getProfile().name().length())) continue;
-                if (Pattern.compile("(^|[^A-Za-z0-9_])" + Pattern.quote(n) + "(?=\\s*[:>\\]\u00bb])").matcher(head).find()) best = p;
+                if (Pattern.compile("(^|[^A-Za-z0-9_])" + Pattern.quote(n) + "($|[^A-Za-z0-9_])").matcher(prefix).find()) best = p;
             }
             return best;
         } catch (Throwable t) {
@@ -120,19 +133,90 @@ final class ChatBridge {
         }
     }
 
-    /** Cuts the face (with the hat layer) out of the skin file the game downloaded and scales it up 8x. Null when it can't be found. */
-    private static byte[] faceFor(UUID id) {
+    // ---------------- real skin faces ----------------
+    private static final Map<UUID, Long> HEAD_TRY = new ConcurrentHashMap<>();
+    private static final ExecutorService HEAD_POOL = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "trimstudio-heads");
+        t.setDaemon(true);
+        return t;
+    });
+    private static final HttpClient WEB = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8)).build();
+
+    /** Starts (at most every 30 s while missing, every 10 min once found) a background job that gets the player's current skin face. */
+    private static void requestHead(UUID id) {
         try {
+            long now = System.currentTimeMillis();
+            Long last = HEAD_TRY.get(id);
+            if (last != null && now - last < (HEADS.containsKey(id) ? 600000L : 30000L)) return;
+            HEAD_TRY.put(id, now);
             Minecraft mc = Minecraft.getInstance();
-            if (mc.getConnection() == null) return null;
+            if (mc.getConnection() == null) return;
             PlayerInfo info = mc.getConnection().getPlayerInfo(id);
-            if (info == null) return null;
-            Matcher m = SKIN_HASH.matcher(String.valueOf(info.getSkin()));
-            if (!m.find()) return null;                       // default skin: the web head is used instead
-            String hash = m.group(1).toLowerCase(Locale.ROOT);
+            if (info == null) return;
+            String hash = hashFromProfile(info.getProfile());
+            if (hash == null) {
+                Matcher m = SKIN_HASH.matcher(String.valueOf(info.getSkin()));
+                if (m.find()) hash = m.group(1);
+            }
+            if (hash == null) return;                          // default skin: the web head is used instead
+            final String h = hash.toLowerCase(Locale.ROOT);
+            HEAD_POOL.execute(() -> {
+                byte[] face = faceFromHash(h);
+                if (face != null) HEADS.put(id, face);
+            });
+        } catch (Throwable t) {
+            // ignore: the web head is used
+        }
+    }
+
+    /** The skin's texture hash from the profile's signed "textures" property (works for any server, also skin-changing plugins). */
+    private static String hashFromProfile(GameProfile profile) {
+        try {
+            Object props = null;
+            for (String name : new String[]{"properties", "getProperties"}) {
+                try { props = profile.getClass().getMethod(name).invoke(profile); } catch (Exception ignored) { }
+                if (props != null) break;
+            }
+            if (props == null) return null;
+            Object coll = null;
+            for (java.lang.reflect.Method m : props.getClass().getMethods()) {
+                if (m.getName().equals("get") && m.getParameterCount() == 1) {
+                    try { coll = m.invoke(props, "textures"); } catch (Exception ignored) { }
+                    if (coll != null) break;
+                }
+            }
+            if (!(coll instanceof Iterable<?> it)) return null;
+            for (Object prop : it) {
+                String value = null;
+                for (String name : new String[]{"value", "getValue"}) {
+                    try { value = (String) prop.getClass().getMethod(name).invoke(prop); } catch (Exception ignored) { }
+                    if (value != null) break;
+                }
+                if (value == null) continue;
+                String json = new String(Base64.getDecoder().decode(value), StandardCharsets.UTF_8);
+                JsonObject tex = JsonParser.parseString(json).getAsJsonObject().getAsJsonObject("textures");
+                if (tex == null || !tex.has("SKIN")) continue;
+                String url = tex.getAsJsonObject("SKIN").get("url").getAsString();
+                int i = url.lastIndexOf('/');
+                if (i >= 0 && i < url.length() - 1) return url.substring(i + 1);
+            }
+        } catch (Throwable t) {
+            // fall through
+        }
+        return null;
+    }
+
+    /** Local copy the game already downloaded, else downloaded from the texture server; then cut out the face. */
+    private static byte[] faceFromHash(String hash) {
+        try {
+            BufferedImage skin = null;
             Path file = FabricLoader.getInstance().getGameDir().resolve("assets").resolve("skins").resolve(hash.substring(0, 2)).resolve(hash);
-            if (!Files.exists(file)) return null;
-            BufferedImage skin = ImageIO.read(file.toFile());
+            if (Files.exists(file)) skin = ImageIO.read(file.toFile());
+            if (skin == null) {
+                HttpResponse<byte[]> res = WEB.send(HttpRequest.newBuilder(URI.create("https://textures.minecraft.net/texture/" + hash))
+                        .timeout(Duration.ofSeconds(10)).GET().build(), HttpResponse.BodyHandlers.ofByteArray());
+                if (res.statusCode() == 200) skin = ImageIO.read(new ByteArrayInputStream(res.body()));
+            }
             if (skin == null || skin.getWidth() < 64 || skin.getHeight() < 16) return null;
             BufferedImage out = new BufferedImage(64, 64, BufferedImage.TYPE_INT_ARGB);
             for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) {
