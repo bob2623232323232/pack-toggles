@@ -59,8 +59,8 @@ import java.util.stream.Stream;
  */
 public class ToggleScreen extends Screen {
     private static final int TEXT = 0xFFF5E8DD, GREEN = 0xFF58D26F, RED = 0xFFE0564F, AMBER = 0xFFF0B429;
-    private static final String[] TABS = {"Trims", "Wardrobe", "Skin", "Discord", "Cape", "Settings"};
-    private static final int T_TRIMS = 0, T_WARDROBE = 1, T_SKIN = 2, T_DISCORD = 3, T_CAPE = 4, T_SETTINGS = 5;
+    private static final String[] TABS = {"Trims", "Wardrobe", "Skin", "Discord", "Cape", "Players", "Stats", "Settings"};
+    private static final int T_TRIMS = 0, T_WARDROBE = 1, T_SKIN = 2, T_DISCORD = 3, T_CAPE = 4, T_PLAYERS = 5, T_STATS = 6, T_SETTINGS = 7;
     private static final String[] INTENSITY = {"Low", "Medium", "High"};
     private static final String[] SET_CHIPS = {"Layout", "Theme", "Display", "Colors"};
     private static final String[] SPEED = {"Slow", "Normal", "Fast"};
@@ -578,6 +578,7 @@ public class ToggleScreen extends Screen {
             case T_SKIN -> initSkin();
             case T_DISCORD -> initDiscordTab();
             case T_CAPE -> initCape();
+            case T_PLAYERS -> initPlayers();
             case T_SETTINGS -> initSettings();
             default -> { }
         }
@@ -701,6 +702,7 @@ public class ToggleScreen extends Screen {
     private int[] skinBar(int i) { return new int[]{ctlX + 30, ySlider(i) + 1, Math.max(20, ctlW - 30 - 34), 8}; }
 
     private void initSkin() {
+        if (paintOn) { initPaint(); return; }
         if (!filesLoaded) refreshFiles(false);
         int h = bottom - top;
         sListW = Math.max(120, Math.min(170, cw / 3));
@@ -737,6 +739,7 @@ public class ToggleScreen extends Screen {
         for (int i = 0; i < SKIN_BTNS.length; i++) {
             hit("sb" + i, ctlX + (i % 2) * (bw + 4), yBtn() + (i / 2) * 22, bw, 18, acts[i]);
         }
+        hit("sdraw", ctlX, Math.min(yBtn() + 66, bottom - 20), ctlW, 18, () -> { paintOn = true; init(); status = Component.literal("Draw: left click paints, right click erases"); });
     }
 
     // ---- discord tab layout ----
@@ -807,6 +810,164 @@ public class ToggleScreen extends Screen {
         }
         top += 22;
         try { if (discPage == 0) drawDiscord(g, mx, my); else drawChat(g, mx, my); } finally { top -= 22; }
+    }
+
+    // ---- skin pixel painter ----
+    private static boolean paintOn = false;
+    private static int paintColor = 0xFF3BB273, paintTool = 0;     // 0 pen, 1 eraser, 2 fill, 3 picker
+    private static final String[] PAINT_TOOLS = {"Pen", "Eraser", "Fill", "Pick"};
+    private static final int[] PAINT_PAL = {0xFFC8102E, 0xFFF2762B, 0xFFFFD23F, 0xFF3BB273, 0xFF1B998B, 0xFF2E86DE, 0xFF5B4B8A, 0xFFE056A0,
+            0xFFFFFFFF, 0xFFBFC5D2, 0xFF7C8294, 0xFF3A3F4B, 0xFF111111, 0xFF7A4A21, 0xFFF1C9A5, 0xFF9AD1FF};
+
+    /** {x, y, scale} of the 64x64 skin canvas. */
+    private int[] paintCanvas() {
+        int sc = Math.max(2, Math.min(6, (bottom - top - 8) / 64));
+        return new int[]{cx + 8, top + 4, sc};
+    }
+
+    private static void paintFill(int x, int y) {
+        int target = source[y * 64 + x], rep = paintColor;
+        if (target == rep) return;
+        ArrayDeque<int[]> st = new ArrayDeque<>();
+        st.push(new int[]{x, y});
+        while (!st.isEmpty()) {
+            int[] p = st.pop();
+            if (p[0] < 0 || p[1] < 0 || p[0] > 63 || p[1] > 63 || source[p[1] * 64 + p[0]] != target) continue;
+            source[p[1] * 64 + p[0]] = rep;
+            st.push(new int[]{p[0] + 1, p[1]}); st.push(new int[]{p[0] - 1, p[1]});
+            st.push(new int[]{p[0], p[1] + 1}); st.push(new int[]{p[0], p[1] - 1});
+        }
+    }
+
+    private void initPaint() {
+        ensureSkin();
+        int[] cv = paintCanvas();
+        int rx = cv[0] + 64 * cv[2] + 12;
+        for (int i = 0; i < 16; i++) {
+            final int col = PAINT_PAL[i];
+            hit("psw" + i, rx + (i % 4) * 17, top + 4 + (i / 4) * 17, 15, 15, () -> { paintColor = col; if (paintTool != 2) paintTool = 0; });
+        }
+        int ty = top + 4 + 4 * 17 + 6;
+        for (int i = 0; i < 4; i++) { final int t = i; hit("ptool" + i, rx + (i % 2) * 40, ty + (i / 2) * 22, 37, 18, () -> paintTool = t); }
+        hit("psave", rx, ty + 48, 77, 18, this::saveSkin);
+        hit("pback", rx, ty + 70, 77, 18, () -> { paintOn = false; init(); });
+    }
+
+    private void drawPaint(GuiGraphics g) {
+        ensureSkin();
+        int[] cv = paintCanvas();
+        int sc = cv[2], x0 = cv[0], y0 = cv[1];
+        g.fill(x0 - 1, y0 - 1, x0 + 64 * sc + 1, y0 + 64 * sc + 1, cLine);
+        for (int y = 0; y < 64; y++) for (int x = 0; x < 64; x++) {
+            int col = source[y * 64 + x];
+            g.fill(x0 + x * sc, y0 + y * sc, x0 + (x + 1) * sc, y0 + (y + 1) * sc,
+                    (col >>> 24) != 0 ? (col | 0xFF000000) : (((x + y) & 1) == 0 ? 0xFF2A2D36 : 0xFF23262E));
+        }
+        int rx = x0 + 64 * sc + 12;
+        for (int i = 0; i < 16; i++) {
+            int sx = rx + (i % 4) * 17, sy = top + 4 + (i / 4) * 17;
+            if (PAINT_PAL[i] == paintColor) g.fill(sx - 2, sy - 2, sx + 17, sy + 17, 0xFFFFFFFF);
+            g.fill(sx, sy, sx + 15, sy + 15, PAINT_PAL[i]);
+        }
+        int ty = top + 4 + 4 * 17 + 6;
+        for (int i = 0; i < 4; i++) chip(g, "ptool" + i, new int[]{rx + (i % 2) * 40, ty + (i / 2) * 22, 37, 18}, PAINT_TOOLS[i], paintTool == i ? 1 : 0, cAccent);
+        chip(g, "psave", new int[]{rx, ty + 48, 77, 18}, "Save copy", 0, cAccent);
+        chip(g, "pback", new int[]{rx, ty + 70, 77, 18}, "Back", 0, cAccent);
+        text(g, skinDirty ? "Not saved yet" : "Saved", rx, ty + 94, skinDirty ? AMBER : muted());
+    }
+
+    // ---- players tab ----
+    private static int playerPage = 0;
+
+    private List<PlayerInfo> onlinePlayers() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.getConnection() == null) return new ArrayList<>();
+        List<PlayerInfo> l = new ArrayList<>(mc.getConnection().getOnlinePlayers());
+        l.sort(Comparator.comparing(p -> p.getProfile().name().toLowerCase(Locale.ROOT)));
+        return l;
+    }
+
+    private int playerRows() { return Math.max(1, (bottom - top - 30) / 18); }
+
+    private void initPlayers() {
+        int pages = Math.max(1, (onlinePlayers().size() + playerRows() - 1) / playerRows());
+        playerPage = clampi(playerPage, 0, pages - 1);
+        hit("pprev", cx + cw - 46, top + 4, 18, 16, () -> { playerPage = (playerPage + pages - 1) % pages; });
+        hit("pnext", cx + cw - 24, top + 4, 18, 16, () -> { playerPage = (playerPage + 1) % pages; });
+    }
+
+    private void drawPlayers(GuiGraphics g, int mx, int my) {
+        Minecraft mc = Minecraft.getInstance();
+        card(g, cx, top, cw, bottom - top);
+        List<PlayerInfo> all = onlinePlayers();
+        int rows = playerRows(), pages = Math.max(1, (all.size() + rows - 1) / rows);
+        playerPage = clampi(playerPage, 0, pages - 1);
+        bold(g, "Players online (" + all.size() + ")", cx + 10, top + 8, TEXT);
+        String pg = (playerPage + 1) + "/" + pages;
+        text(g, pg, cx + cw - 50 - font.width(pg), top + 8, muted());
+        chip(g, "pprev", new int[]{cx + cw - 46, top + 4, 18, 16}, "<", 0, cAccent);
+        chip(g, "pnext", new int[]{cx + cw - 24, top + 4, 18, 16}, ">", 0, cAccent);
+        if (all.isEmpty()) { text(g, "Join a world or server to see players", cx + 12, top + 28, muted()); return; }
+        int nameW = Math.max(60, cw / 3);
+        for (int i = 0; i < rows; i++) {
+            int idx = playerPage * rows + i;
+            if (idx >= all.size()) break;
+            PlayerInfo info = all.get(idx);
+            int ry = top + 26 + i * 18;
+            try { PlayerFaceRenderer.draw(g, info.getSkin(), cx + 10, ry + 1, 12); } catch (Exception ignored) { }
+            text(g, fit(info.getProfile().name(), nameW - 16), cx + 26, ry + 5, TEXT);
+            int lat = info.getLatency();
+            String ping = lat > 0 ? lat + " ms" : "-";
+            text(g, ping, cx + cw - 12 - font.width(ping), ry + 5, lat > 0 && lat < 100 ? GREEN : lat < 250 ? AMBER : RED);
+            net.minecraft.world.entity.player.Player pl = mc.level != null ? mc.level.getPlayerByUUID(info.getProfile().id()) : null;
+            int bx = cx + 26 + nameW, bw = Math.max(40, cw - nameW - 26 - 12 - 70);
+            if (pl != null) {
+                float hp = pl.getHealth(), max = Math.max(1f, pl.getMaxHealth());
+                g.fill(bx, ry + 4, bx + bw, ry + 12, mix(cCard, cBg, 0.6f));
+                g.fill(bx, ry + 4, bx + Math.round(bw * Math.min(1f, hp / max)), ry + 12, hp / max > 0.5f ? GREEN : hp / max > 0.25f ? AMBER : RED);
+                String t = Math.round(hp) + "/" + Math.round(max);
+                text(g, t, bx + (bw - font.width(t)) / 2, ry + 4, 0xFFFFFFFF);
+            } else {
+                text(g, "out of range", bx, ry + 5, muted());
+            }
+        }
+    }
+
+    // ---- stats tab ----
+    private void copyPos() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null) { status = Component.literal("Join a world first"); return; }
+        String p = Math.round(mc.player.getX()) + " " + Math.round(mc.player.getY()) + " " + Math.round(mc.player.getZ());
+        mc.keyboardHandler.setClipboard(p);
+        status = Component.literal("Copied position: " + p);
+    }
+
+    private void drawStats(GuiGraphics g) {
+        Minecraft mc = Minecraft.getInstance();
+        card(g, cx, top, cw, bottom - top);
+        bold(g, "Live stats", cx + 10, top + 8, TEXT);
+        if (mc.player == null) { text(g, "Join a world to see your stats", cx + 12, top + 26, muted()); return; }
+        var p = mc.player;
+        int lat = 0, online = 0;
+        if (mc.getConnection() != null) {
+            online = mc.getConnection().getOnlinePlayers().size();
+            PlayerInfo me = mc.getConnection().getPlayerInfo(p.getUUID());
+            if (me != null) lat = me.getLatency();
+        }
+        String[][] rows = {
+                {"Position", Math.round(p.getX()) + "  " + Math.round(p.getY()) + "  " + Math.round(p.getZ())},
+                {"Health", Math.round(p.getHealth()) + " / " + Math.round(p.getMaxHealth())},
+                {"Food", p.getFoodData().getFoodLevel() + " / 20"},
+                {"Armor", "" + p.getArmorValue()},
+                {"Ping", lat > 0 ? lat + " ms" : "-"},
+                {"Players online", "" + online},
+        };
+        for (int i = 0; i < rows.length; i++) {
+            int ry = top + 28 + i * 16;
+            round(g, cx + 8, ry - 2, cw - 16, 14, alpha(cAccent, 0.06f));
+            text(g, rows[i][0], cx + 14, ry + 1, muted());
+            text(g, rows[i][1], cx + cw - 14 - font.width(rows[i][1]), ry + 1, TEXT);
+        }
     }
 
     // ---- cape editor tab ----
@@ -1015,6 +1176,8 @@ public class ToggleScreen extends Screen {
             case T_SKIN -> "Save recolored copy";
             case T_DISCORD -> discPage == 1 ? "Send chat log now" : (DiscordBot.isRunning() ? "Disconnect bot" : "Connect bot");
             case T_CAPE -> "Save cape PNG";
+            case T_PLAYERS -> "Refresh list";
+            case T_STATS -> "Copy my position";
             default -> "Reset preview";
         };
     }
@@ -1029,6 +1192,8 @@ public class ToggleScreen extends Screen {
                 else if (DiscordBot.isRunning()) DiscordBot.stop(); else { savePrefs(); DiscordBot.start(); }
             }
             case T_CAPE -> saveCape();
+            case T_PLAYERS -> init();
+            case T_STATS -> copyPos();
             default -> { viewYaw = 0.35f; status = Component.literal("Preview reset"); }
         }
     }
@@ -1273,6 +1438,23 @@ public class ToggleScreen extends Screen {
                 int ppx = (mx - cv[0]) / cv[2], ppy = (my - cv[1]) / cv[2];
                 if (left) capePaint(ppx, ppy, edge); else capePx[ppy * 64 + ppx] = 0;
             }
+        } else if (tab == T_SKIN && paintOn) {
+            int[] cv = paintCanvas();
+            if (mx >= cv[0] && mx < cv[0] + 64 * cv[2] && my >= cv[1] && my < cv[1] + 64 * cv[2]) {
+                int ppx = (mx - cv[0]) / cv[2], ppy = (my - cv[1]) / cv[2], pi = ppy * 64 + ppx;
+                ensureSkin();
+                boolean changed = false;
+                if (right) { source[pi] = 0; changed = true; }
+                else if (left) {
+                    switch (paintTool) {
+                        case 0 -> { if (source[pi] != paintColor) { source[pi] = paintColor; changed = true; } }
+                        case 1 -> { if (source[pi] != 0) { source[pi] = 0; changed = true; } }
+                        case 2 -> { if (edge) { paintFill(ppx, ppy); changed = true; } }
+                        default -> { if (edge && (source[pi] >>> 24) != 0) { paintColor = source[pi] | 0xFF000000; paintTool = 0; } }
+                    }
+                }
+                if (changed) { recolor(); skinDirty = true; }
+            }
         } else if (tab == T_SKIN) {
             if (edge && left) {
                 for (int i = 0; i < 4; i++) {
@@ -1490,6 +1672,13 @@ public class ToggleScreen extends Screen {
                 g.fill(x + 3, y, x + 11, y + 2, c); g.fill(x + 2, y + 2, x + 12, y + 12, c); g.fill(x + 4, y + 12, x + 10, y + 14, c);
                 g.fill(x + 6, y + 5, x + 8, y + 9, bgc);
             }
+            case T_PLAYERS -> { // two heads
+                g.fill(x + 1, y + 1, x + 6, y + 6, c); g.fill(x, y + 8, x + 7, y + 14, c);
+                g.fill(x + 8, y + 3, x + 13, y + 8, c); g.fill(x + 7, y + 9, x + 14, y + 14, c);
+            }
+            case T_STATS -> { // bars
+                g.fill(x + 1, y + 8, x + 4, y + 14, c); g.fill(x + 5, y + 4, x + 8, y + 14, c); g.fill(x + 9, y + 1, x + 12, y + 14, c);
+            }
             default -> { g.fill(x + 6, y, x + 8, y + 14, c); g.fill(x, y + 6, x + 14, y + 8, c); disc(g, x + 7, y + 7, 5, c); disc(g, x + 7, y + 7, 2, bgc); }
         }
     }
@@ -1564,6 +1753,8 @@ public class ToggleScreen extends Screen {
                 case T_SKIN -> drawSkin(g);
                 case T_DISCORD -> drawDiscordTab(g, mx, my);
                 case T_CAPE -> drawCape(g, mx, my);
+                case T_PLAYERS -> drawPlayers(g, mx, my);
+                case T_STATS -> drawStats(g);
                 case T_SETTINGS -> drawSettings(g);
                 default -> drawTrims(g, mx, my);
             }
@@ -1743,7 +1934,7 @@ public class ToggleScreen extends Screen {
 
     private void drawBottom(GuiGraphics g) {
         String msg = status.getString();
-        if (msg.isEmpty()) msg = tab == T_SKIN ? "Click a skin to load it  |  click the head or preview to pick a color" : "1-6 tabs  |  L layout  |  Ctrl+K search";
+        if (msg.isEmpty()) msg = tab == T_SKIN ? "Click a skin to load it  |  click the head or preview to pick a color" : "1-8 tabs  |  L layout  |  Ctrl+K search";
         text(g, fit(msg, cw - applyW - 16), cx + 2, applyY + 8, muted());
         float h = ease("applyhov", hov("apply") ? 1 : 0, 14);
         round(g, applyX - 1, applyY - 1, applyW + 2, applyH + 2, alpha(cAccent2, 0.25f * h));
@@ -1844,6 +2035,7 @@ public class ToggleScreen extends Screen {
 
     // ---- skin tab ----
     private void drawSkin(GuiGraphics g) {
+        if (paintOn) { drawPaint(g); return; }
         int dx = cx - baseCx, h = bottom - top;
 
         // skin list
@@ -1919,6 +2111,7 @@ public class ToggleScreen extends Screen {
         for (int i = 0; i < SKIN_BTNS.length; i++) {
             chip(g, "sb" + i, new int[]{x + (i % 2) * (bw + 4), yBtn() + (i / 2) * 22, bw, 18}, SKIN_BTNS[i], 0, cAccent);
         }
+        chip(g, "sdraw", new int[]{x, Math.min(yBtn() + 66, bottom - 20), ctlW, 18}, "Draw on skin", 0, cAccent);
     }
 
     // ---- discord tab ----
