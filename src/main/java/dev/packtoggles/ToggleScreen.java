@@ -13,6 +13,7 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.inventory.InventoryScreen;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.client.player.RemotePlayer;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.client.renderer.texture.DynamicTexture;
@@ -28,6 +29,7 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.util.FormattedCharSequence;
 import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.player.PlayerSkin;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -37,6 +39,7 @@ import net.minecraft.world.item.equipment.trim.TrimPattern;
 import org.lwjgl.glfw.GLFW;
 
 import javax.imageio.ImageIO;
+import java.awt.Color;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -49,10 +52,10 @@ import java.util.function.Consumer;
 import java.util.stream.Stream;
 
 /**
- * Trim Studio: 3D armor-trim preview, saved loadouts (Wardrobe), a pixel skin editor, a Discord bot and settings.
- * Everything is drawn by hand in render(); vanilla Buttons are transparent click areas. Mouse dragging
- * (painting, colour bars, preview rotation) is polled each frame. The skin canvas and previews are drawn
- * from small dynamic textures, so the skin tab costs a handful of draw calls instead of thousands.
+ * Trim Studio: 3D armor-trim preview, saved loadouts (Wardrobe), a skin library with a recolor tool, a Discord bot
+ * and settings. Everything is drawn by hand in render(); vanilla Buttons are transparent click areas. Mouse dragging
+ * (sliders, preview rotation) is polled each frame. Skin previews, the head zoom and the skin list thumbnails are
+ * small dynamic textures, so the skin tab costs a handful of draw calls.
  */
 public class ToggleScreen extends Screen {
     private static final int TEXT = 0xFFF5E8DD, GREEN = 0xFF58D26F, RED = 0xFFE0564F, AMBER = 0xFFF0B429;
@@ -84,7 +87,7 @@ public class ToggleScreen extends Screen {
     private static final String[] PIECE_NAMES = {"Helmet", "Chest", "Legs", "Boots", "Showcase", "Random"};
     private static final EquipmentSlot[] SLOTS = {EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET};
 
-    // skin editor data: boxes are {u, v, w, h, d} of the standard player skin unwrap
+    // skin data: boxes are {u, v, w, h, d} of the standard player skin unwrap (used by the starter template)
     private static final int[][] BOXES = {
             {0, 0, 8, 8, 8}, {16, 16, 8, 12, 4}, {40, 16, 4, 12, 4}, {0, 16, 4, 12, 4}, {32, 48, 4, 12, 4}, {16, 48, 4, 12, 4},
             {32, 0, 8, 8, 8}, {16, 32, 8, 12, 4}, {40, 32, 4, 12, 4}, {48, 48, 4, 12, 4}, {0, 32, 4, 12, 4}, {0, 48, 4, 12, 4}};
@@ -95,23 +98,15 @@ public class ToggleScreen extends Screen {
     private static final int[][] BACK = {
             {4, 0, 8, 8, 24, 8, 56, 8}, {4, 8, 8, 12, 32, 20, 32, 36}, {0, 8, 4, 12, 44, 52, 60, 52},
             {12, 8, 4, 12, 52, 20, 52, 36}, {4, 20, 4, 12, 28, 52, 12, 52}, {8, 20, 4, 12, 12, 20, 12, 36}};
-    private static final int[] PALETTE = {0xFF1A1A1A, 0xFF555555, 0xFFAAAAAA, 0xFFFFFFFF, 0xFFC68863, 0xFF8B5A2B, 0xFF5B3A1E, 0xFFE8C39E,
-            0xFFD9382C, 0xFFF2762B, 0xFFF0B429, 0xFF58D26F, 0xFF1D9E75, 0xFF378ADD, 0xFF534AB7, 0xFFD4537E};
-    private static final String[] TOOLS = {"Pencil", "Eraser", "Fill", "Pick"};
-    private static final String[] BRUSHES = {"1px", "2px", "3px"};
-    private static final boolean[] USED = new boolean[64 * 64];
 
-    static {
-        for (int[] b : BOXES) {
-            int u = b[0], v = b[1], w = b[2], h = b[3], d = b[4];
-            mark(u + d, v, w, d); mark(u + d + w, v, w, d);
-            mark(u, v + d, d, h); mark(u + d, v + d, w, h); mark(u + d + w, v + d, d, h); mark(u + 2 * d + w, v + d, w, h);
-        }
-    }
+    // recolor sliders: hue shift (degrees), saturation (%), lightness (+/-), tolerance for "Picked color"
+    private static final String[] RC_NAMES = {"Hue", "Sat", "Light", "Tol"};
+    private static final int[] RC_MIN = {-180, 0, -100, 0}, RC_MAX = {180, 200, 100, 100};
+    private static final String[] SKIN_BTNS = {"Reset", "Save copy", "Refresh", "Open folder", "To Discord", "Template"};
+    private static final int HEAD_Z = 6;
 
-    private static void mark(int x, int y, int w, int h) {
-        for (int j = 0; j < h; j++) for (int i = 0; i < w; i++) USED[(y + j) * 64 + x + i] = true;
-    }
+    /** One PNG from the skin-studio folder. px is null when the file is not a valid skin. */
+    private record SkinFile(Path path, String name, int[] px) { }
 
     // session + saved state
     private static int layout = L_RAIL;
@@ -122,13 +117,20 @@ public class ToggleScreen extends Screen {
     private static boolean customOn = false;
     private static int customAccent = 0xFFF2762B, customAccent2 = 0xFFFFB347;
     private static float viewYaw = 0.35f;
-    private static int[] canvas = null;
     private static boolean skinDirty = false, skinChanged = true, equipDirty = true;
-    private static final List<int[]> undo = new ArrayList<>();
-    private static int curColor = 0xFFC68863, tool = 0, fileIdx = -1, brush = 1;
     private static final List<String> wardrobe = new ArrayList<>();
     private static final boolean ESSENTIAL = FabricLoader.getInstance().isModLoaded("essential");
     private static boolean prefsLoaded = false;
+
+    // skin library state (static so the Discord bot's !skin sees it even when the screen is closed)
+    private static int[] source = null, canvas = null;
+    private static String skinName = "Starter template";
+    private static final int[] rc = {0, 100, 0, 30};
+    private static boolean pickMode = false;
+    private static int pickColor = 0xFFC68863;
+    private static final List<SkinFile> files = new ArrayList<>();
+    private static boolean filesLoaded = false;
+    private static int selIdx = -1, sPage = 0;
 
     private final Screen parent;
     private final FX fx = new FX();
@@ -146,9 +148,8 @@ public class ToggleScreen extends Screen {
     private boolean colorsInit = false;
 
     // text fields
-    private EditBox search, tokenBox, chanBox, userBox, chatBox, hexBox, chatChanBox;
+    private EditBox search, tokenBox, chanBox, userBox, chatBox, chatChanBox;
     private String chatText = "";
-    private int lastCx = -1, lastCy = -1;
     private final List<EditBox> fields = new ArrayList<>();
     private String searchText = "";
     private boolean searchActive = false, building = false, dirty = false, refocus = false;
@@ -172,18 +173,18 @@ public class ToggleScreen extends Screen {
     private int yLA, yLB, yLC, yLD;
 
     // skin tab
-    private int cs = 3, cvX, cvY, rX, rW, ctlW, pvScale = 3, palSw = 12;
-    private boolean wasPressed = false, canvasDrag = false;
+    private int sListW = 140, sRows = 1, pvX, ctlX, ctlW, pvScale = 3;
+    private boolean wasPressed = false;
     private int sliderDrag = -1;
-    private DynamicTexture canvasTex;
-    private NativeImage canvasImg;
-    private Identifier canvasId;
-    private int canvasSize = 0;
     private final DynamicTexture[] pvTex = new DynamicTexture[2];
     private final NativeImage[] pvImg = new NativeImage[2];
     private final Identifier[] pvId = new Identifier[2];
     private int pvSize = 0;
-    private boolean texDirty = true;
+    private DynamicTexture headTex, thumbTex;
+    private NativeImage headImg, thumbImg;
+    private Identifier headId, thumbId;
+    private int thumbN = 0;
+    private boolean texDirty = true, thumbsDirty = true;
 
     // wardrobe tab
     private int wRows = 1;
@@ -192,8 +193,13 @@ public class ToggleScreen extends Screen {
         super(Component.translatable("screen.packtoggles.title"));
         this.parent = parent;
         loadPrefs();
-        PackTogglesClient.LOG.info("[Trim Studio] screen opened: build 3.0.0, layout={}, essential={}", LAYOUTS[layout], ESSENTIAL);
-        if (canvas == null) { canvas = new int[64 * 64]; template(canvas); }
+        PackTogglesClient.LOG.info("[Trim Studio] screen opened: build 3.1.0, layout={}, essential={}", LAYOUTS[layout], ESSENTIAL);
+        ensureSkin();
+    }
+
+    private static void ensureSkin() {
+        if (source == null) { source = new int[64 * 64]; template(source); }
+        if (canvas == null) recolor();
     }
 
     // ---------------- saved settings ----------------
@@ -226,7 +232,7 @@ public class ToggleScreen extends Screen {
         customOn = getb(p, "customOn", customOn);
         customAccent = 0xFF000000 | geti(p, "accent", customAccent);
         customAccent2 = 0xFF000000 | geti(p, "accent2", customAccent2);
-        brush = clampi(geti(p, "brush", brush), 1, 3);
+        rc[3] = clampi(geti(p, "skin.tolerance", rc[3]), 0, 100);
         DiscordBot.token = p.getProperty("dc.token", "");
         DiscordBot.channelId = p.getProperty("dc.channel", "");
         DiscordBot.userId = p.getProperty("dc.user", "");
@@ -237,6 +243,7 @@ public class ToggleScreen extends Screen {
         DiscordBot.logChat = getb(p, "dc.logchat", false);
         DiscordBot.hourly = getb(p, "dc.hourly", false);
         DiscordBot.sayOn = getb(p, "dc.say", true);
+        DiscordBot.chatEmbeds = getb(p, "dc.embeds", true);
         wardrobe.clear();
         for (String s : p.getProperty("wardrobe", "").split(";")) if (!s.isBlank() && entry(s) != null) wardrobe.add(s);
     }
@@ -258,7 +265,7 @@ public class ToggleScreen extends Screen {
         p.setProperty("customOn", "" + customOn);
         p.setProperty("accent", "" + (customAccent & 0xFFFFFF));
         p.setProperty("accent2", "" + (customAccent2 & 0xFFFFFF));
-        p.setProperty("brush", "" + brush);
+        p.setProperty("skin.tolerance", "" + rc[3]);
         p.setProperty("dc.token", DiscordBot.token);
         p.setProperty("dc.channel", DiscordBot.channelId);
         p.setProperty("dc.user", DiscordBot.userId);
@@ -269,6 +276,7 @@ public class ToggleScreen extends Screen {
         p.setProperty("dc.logchat", "" + DiscordBot.logChat);
         p.setProperty("dc.hourly", "" + DiscordBot.hourly);
         p.setProperty("dc.say", "" + DiscordBot.sayOn);
+        p.setProperty("dc.embeds", "" + DiscordBot.chatEmbeds);
         p.setProperty("wardrobe", String.join(";", wardrobe));
         try (OutputStream out = Files.newOutputStream(prefsPath())) { p.store(out, "Trim Studio settings (contains your Discord bot token, keep private)"); }
         catch (Exception e) { PackTogglesClient.LOG.warn("Could not save Trim Studio settings", e); }
@@ -308,8 +316,10 @@ public class ToggleScreen extends Screen {
         return loadoutText();
     }
 
+    /** The skin currently shown on the Skin tab, recolor included. */
     static byte[] skinPng() {
         try {
+            ensureSkin();
             BufferedImage img = new BufferedImage(64, 64, BufferedImage.TYPE_INT_ARGB);
             for (int i = 0; i < canvas.length; i++) img.setRGB(i % 64, i / 64, canvas[i]);
             ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -488,7 +498,7 @@ public class ToggleScreen extends Screen {
         hits.clear();
         fields.clear();
         search = null;
-        tokenBox = chanBox = userBox = chatBox = hexBox = chatChanBox = null;
+        tokenBox = chanBox = userBox = chatBox = chatChanBox = null;
         searchActive = false;
         pw = Math.min(width - 24, 560);
         ph = Math.min(height - 16, 340);
@@ -680,54 +690,52 @@ public class ToggleScreen extends Screen {
     }
 
     // ---- skin tab layout ----
-    private int yBrush() { return top + 20; }
+    private int ySlider(int i) { return top + 60 + i * 15; }
 
-    private int yBars() { return top + 42; }
+    private int yMode() { return top + 122; }
 
-    private int yHex() { return top + 88; }
+    private int yBtn() { return top + 144; }
 
-    private int yPal() { return top + 110; }
+    /** Slider bar in base (unshifted) coordinates: {x, y, w, h}. */
+    private int[] skinBar(int i) { return new int[]{ctlX + 30, ySlider(i) + 1, Math.max(20, ctlW - 30 - 34), 8}; }
 
     private void initSkin() {
-        cs = Math.max(2, Math.min(4, (bottom - top - 8) / 64));
-        int cvW = 64 * cs;
-        cvX = cx + 6;
-        cvY = top + 2;
-        rX = cvX + cvW + 12;
-        rW = cx + cw - rX;
-        pvScale = rW >= 250 ? 3 : 2;
-        ctlW = rW - (2 * 16 * pvScale + 8) - 8;
-        palSw = Math.max(10, (ctlW - 7 * 3) / 8);
+        if (!filesLoaded) refreshFiles(false);
+        int h = bottom - top;
+        sListW = Math.max(120, Math.min(170, cw / 3));
+        sRows = Math.max(1, (h - 26) / 20);
+        int pages = Math.max(1, (files.size() + sRows - 1) / sRows);
+        sPage = clampi(sPage, 0, pages - 1);
+        int rest = cw - sListW - 8;
+        pvScale = clampi((h - 24) / 32, 2, 4);
+        while (pvScale > 2 && rest - (2 * 16 * pvScale + 8 + 6) - 12 < 170) pvScale--;
+        pvX = cx + sListW + 8 + 3;
+        ctlX = pvX + 2 * 16 * pvScale + 8 + 3 + 12;
+        ctlW = cx + cw - ctlX - 2;
         ensureTextures();
 
-        int tw = (ctlW - 3 * 4) / 4;
-        for (int i = 0; i < 4; i++) {
-            final int idx = i;
-            hit("tool" + i, rX + i * (tw + 4), top, tw, 16, () -> tool = idx);
+        hit("sprev", cx + sListW - 46, top + 2, 18, 16, () -> { sPage = (sPage + pages - 1) % pages; restartEntrance(-1); init(); });
+        hit("snext", cx + sListW - 24, top + 2, 18, 16, () -> { sPage = (sPage + 1) % pages; restartEntrance(1); init(); });
+        for (int i = 0; i < sRows; i++) {
+            final int idx = sPage * sRows + i;
+            if (idx >= files.size()) break;
+            hit("srow" + i, cx + 4, top + 22 + i * 20, sListW - 8, 18, () -> selectSkin(idx));
         }
-        int bw3 = (ctlW - 2 * 4) / 3;
-        for (int i = 0; i < 3; i++) {
-            final int idx = i;
-            hit("brush" + i, rX + i * (bw3 + 4), yBrush(), bw3, 16, () -> { brush = idx + 1; savePrefs(); });
+        int w2 = (ctlW - 20) / 2;
+        hit("smode0", ctlX, yMode(), w2, 16, () -> { pickMode = false; recolor(); });
+        hit("smode1", ctlX + w2 + 4, yMode(), w2, 16, () -> { pickMode = true; recolor(); status = Component.literal("Click the head or the preview to pick the color to change"); });
+        int bw = (ctlW - 4) / 2;
+        Runnable[] acts = {
+                () -> { resetRecolor(); status = Component.literal("Recolor reset"); },
+                this::saveSkin,
+                () -> { refreshFiles(true); init(); },
+                this::openFolder,
+                this::sendSkinToDiscord,
+                () -> { source = new int[64 * 64]; template(source); skinName = "Starter template"; selIdx = -1; resetRecolor(); status = Component.literal("Starter template loaded"); }
+        };
+        for (int i = 0; i < SKIN_BTNS.length; i++) {
+            hit("sb" + i, ctlX + (i % 2) * (bw + 4), yBtn() + (i / 2) * 22, bw, 18, acts[i]);
         }
-        for (int i = 0; i < 16; i++) {
-            final int c = PALETTE[i];
-            hit("pal" + i, rX + (i % 8) * (palSw + 3), yPal() + (i / 8) * (palSw + 3), palSw, palSw, () -> curColor = c);
-        }
-        int by = yPal() + 2 * (palSw + 3) + 6, bw = (ctlW - 4) / 2;
-        hit("undo", rX, by, bw, 18, this::undoSkin);
-        hit("tmpl", rX + bw + 4, by, bw, 18, () -> { pushUndo(); template(canvas); skinDirty = true; skinChanged = true; status = Component.literal("Template skin restored"); });
-        hit("load", rX, by + 22, bw, 18, this::loadSkin);
-        hit("clear", rX + bw + 4, by + 22, bw, 18, () -> { pushUndo(); Arrays.fill(canvas, 0); skinDirty = true; skinChanged = true; status = Component.literal("Canvas cleared"); });
-        hit("folder", rX, by + 44, bw, 18, this::openFolder);
-        hit("sdisc", rX + bw + 4, by + 44, bw, 18, this::sendSkinToDiscord);
-        hit("dark", rX, by + 66, bw, 18, () -> shade(-24));
-        hit("light", rX + bw + 4, by + 66, bw, 18, () -> shade(24));
-        hexBox = makeBox(rX + 23, yHex(), 62, String.format("#%06X", curColor & 0xFFFFFF), s -> {
-            String h = s.trim().replace("#", "");
-            if (h.length() == 6) try { curColor = 0xFF000000 | Integer.parseInt(h, 16); } catch (Exception ignored) { }
-        }, false);
-        hexBox.setMaxLength(7);
     }
 
     // ---- discord tab layout ----
@@ -768,7 +776,7 @@ public class ToggleScreen extends Screen {
     private void sendSkinToDiscord() {
         byte[] png = skinPng();
         if (png.length == 0) { status = Component.literal("Could not build the skin PNG"); return; }
-        DiscordBot.sendFile("Skin from Trim Studio", "skin.png", png);
+        DiscordBot.sendFile("Skin from Trim Studio: " + skinName, "skin.png", png);
         status = Component.literal("Sending skin to Discord...");
     }
 
@@ -779,9 +787,10 @@ public class ToggleScreen extends Screen {
         hit("opt12", cx + 6, top + 60, lw - 12, 16, () -> DiscordBot.logChat = !DiscordBot.logChat);
         hit("opt13", cx + 6, top + 78, lw - 12, 16, () -> DiscordBot.sayOn = !DiscordBot.sayOn);
         hit("opt14", cx + 6, top + 96, lw - 12, 16, () -> DiscordBot.hourly = !DiscordBot.hourly);
+        hit("opt15", cx + 6, top + 114, lw - 12, 16, () -> DiscordBot.chatEmbeds = !DiscordBot.chatEmbeds);
         int bw = (fw - 4) / 2;
-        hit("clog", fx0, top + 124, bw, 18, () -> { ChatBridge.sendLogNow(); status = Component.literal("Sending the chat log..."); });
-        hit("ctest", fx0 + bw + 4, top + 124, bw, 18, () -> DiscordBot.sendChatText("Test message from Trim Studio"));
+        hit("clog", fx0, top + 142, bw, 18, () -> { ChatBridge.sendLogNow(); status = Component.literal("Sending the chat log..."); });
+        hit("ctest", fx0 + bw + 4, top + 142, bw, 18, () -> DiscordBot.sendChatText("Test message from Trim Studio"));
     }
 
     private void sendChat() {
@@ -856,7 +865,7 @@ public class ToggleScreen extends Screen {
         return switch (tab) {
             case T_TRIMS -> "Copy /give command";
             case T_WARDROBE -> "Save current set";
-            case T_SKIN -> "Save skin PNG";
+            case T_SKIN -> "Save recolored copy";
             case T_DISCORD -> DiscordBot.isRunning() ? "Disconnect bot" : "Connect bot";
             case T_CHAT -> "Send chat log now";
             default -> "Reset preview";
@@ -881,17 +890,139 @@ public class ToggleScreen extends Screen {
 
     private static Path skinDir() { return FabricLoader.getInstance().getGameDir().resolve("skin-studio"); }
 
+    // ---------------- skin library + recolor ----------------
+    /** Reads a skin PNG into 64x64 ARGB pixels, or null if it isn't a skin. Old 64x32 skins get their left limbs rebuilt. */
+    private static int[] readSkin(Path f) {
+        try {
+            BufferedImage img = ImageIO.read(f.toFile());
+            if (img == null || img.getWidth() != 64 || (img.getHeight() != 64 && img.getHeight() != 32)) return null;
+            int[] c = new int[64 * 64];
+            for (int y = 0; y < img.getHeight(); y++) for (int x = 0; x < 64; x++) c[y * 64 + x] = img.getRGB(x, y);
+            if (img.getHeight() == 32) { copyLimb(c, 0, 16, 16, 48); copyLimb(c, 40, 16, 32, 48); }
+            return c;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void refreshFiles(boolean announce) {
+        filesLoaded = true;
+        Path keep = selIdx >= 0 && selIdx < files.size() ? files.get(selIdx).path() : null;
+        files.clear();
+        selIdx = -1;
+        try {
+            Path dir = skinDir();
+            Files.createDirectories(dir);
+            List<Path> paths = new ArrayList<>();
+            try (Stream<Path> s = Files.list(dir)) {
+                s.filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".png")).sorted().limit(200).forEach(paths::add);
+            }
+            for (Path p : paths) files.add(new SkinFile(p, p.getFileName().toString(), readSkin(p)));
+        } catch (Exception e) {
+            PackTogglesClient.LOG.warn("Could not list skins", e);
+            status = Component.literal("Could not read the skin-studio folder: " + e.getMessage());
+        }
+        for (int i = 0; i < files.size(); i++) if (files.get(i).path().equals(keep)) selIdx = i;
+        thumbsDirty = true;
+        if (announce) status = Component.literal("Found " + files.size() + " PNG" + (files.size() == 1 ? "" : "s") + " in skin-studio");
+    }
+
+    private void selectSkin(int idx) {
+        if (idx < 0 || idx >= files.size()) return;
+        SkinFile f = files.get(idx);
+        if (f.px() == null) { status = Component.literal(f.name() + " is not a 64x64 (or 64x32) skin"); return; }
+        selIdx = idx;
+        source = f.px().clone();
+        skinName = f.name();
+        resetRecolor();
+        status = Component.literal("Loaded " + f.name());
+    }
+
+    private static void resetRecolor() {
+        rc[0] = 0; rc[1] = 100; rc[2] = 0;
+        pickMode = false;
+        recolor();
+    }
+
+    /** Rebuilds canvas from source with the current hue / saturation / lightness, on all pixels or only near the picked color. */
+    private static void recolor() {
+        if (source == null) return;
+        boolean ident = rc[0] == 0 && rc[1] == 100 && rc[2] == 0;
+        int[] out = new int[64 * 64];
+        float[] hsb = new float[3];
+        float tolD = rc[3] * 4.42f;
+        int pr = pickColor >> 16 & 255, pg = pickColor >> 8 & 255, pb = pickColor & 255;
+        for (int i = 0; i < out.length; i++) {
+            int c = source[i], a = c >>> 24;
+            if (a == 0 || ident) { out[i] = c; continue; }
+            int r = c >> 16 & 255, g = c >> 8 & 255, b = c & 255;
+            if (pickMode) {
+                int dr = r - pr, dg = g - pg, db = b - pb;
+                if (Math.sqrt(dr * dr + dg * dg + db * db) > tolD) { out[i] = c; continue; }
+            }
+            Color.RGBtoHSB(r, g, b, hsb);
+            float h = hsb[0] + rc[0] / 360f;
+            h -= (float) Math.floor(h);
+            float s = Math.max(0f, Math.min(1f, hsb[1] * rc[1] / 100f));
+            float v = Math.max(0f, Math.min(1f, hsb[2] + rc[2] / 100f));
+            out[i] = (a << 24) | (Color.HSBtoRGB(h, s, v) & 0xFFFFFF);
+        }
+        canvas = out;
+        skinDirty = !ident;
+        skinChanged = true;
+    }
+
+    /** Picks a color from the head zoom or the front/back preview (base coordinates). Returns true if it hit. */
+    private boolean tryPick(int mx, int my) {
+        if (source == null) return false;
+        int idx = -1;
+        int hs = 8 * HEAD_Z;
+        if (mx >= ctlX && my >= top + 2 && mx < ctlX + hs && my < top + 2 + hs) {
+            int x = (mx - ctlX) / HEAD_Z, y = (my - top - 2) / HEAD_Z;
+            int ov = (8 + y) * 64 + 40 + x;
+            idx = (source[ov] >>> 24) != 0 ? ov : (8 + y) * 64 + 8 + x;
+        } else {
+            int pvW = 16 * pvScale, pvH = 32 * pvScale, pvY = top + 3;
+            for (int k = 0; k < 2 && idx < 0; k++) {
+                int ox = pvX + k * (pvW + 8);
+                if (mx < ox || my < pvY || mx >= ox + pvW || my >= pvY + pvH) continue;
+                int x = (mx - ox) / pvScale, y = (my - pvY) / pvScale;
+                for (int[] p : k == 1 ? BACK : FRONT) {
+                    if (x < p[0] || y < p[1] || x >= p[0] + p[2] || y >= p[1] + p[3]) continue;
+                    int ov = (p[7] + y - p[1]) * 64 + p[6] + x - p[0];
+                    idx = (source[ov] >>> 24) != 0 ? ov : (p[5] + y - p[1]) * 64 + p[4] + x - p[0];
+                }
+            }
+        }
+        if (idx < 0 || (source[idx] >>> 24) == 0) return false;
+        pickColor = source[idx] | 0xFF000000;
+        pickMode = true;
+        recolor();
+        status = Component.literal(String.format("Picked #%06X: the sliders now change only similar colors", pickColor & 0xFFFFFF));
+        return true;
+    }
+
     private void saveSkin() {
         try {
+            ensureSkin();
             Path dir = skinDir();
             Files.createDirectories(dir);
             BufferedImage img = new BufferedImage(64, 64, BufferedImage.TYPE_INT_ARGB);
             for (int i = 0; i < canvas.length; i++) img.setRGB(i % 64, i / 64, canvas[i]);
-            String name = "skin-" + new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date()) + ".png";
-            ImageIO.write(img, "png", dir.resolve(name).toFile());
-            skinDirty = false;
+            String base = skinName.toLowerCase(Locale.ROOT).endsWith(".png") ? skinName.substring(0, skinName.length() - 4) : skinName;
+            base = base.replaceAll("[^A-Za-z0-9_.-]+", "-");
+            if (base.length() > 40) base = base.substring(0, 40);
+            String name = base + "-" + new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date()) + ".png";
+            Path target = dir.resolve(name);
+            ImageIO.write(img, "png", target.toFile());
+            refreshFiles(false);
+            for (int i = 0; i < files.size(); i++) if (files.get(i).path().equals(target)) { selIdx = i; sPage = i / Math.max(1, sRows); }
+            source = canvas.clone();
+            skinName = name;
+            resetRecolor();
             status = Component.literal("Saved skin-studio/" + name + (ESSENTIAL ? "  |  Essential: Wardrobe > Skins > add from file" : ""));
             if (DiscordBot.autoPost && DiscordBot.isRunning()) sendSkinToDiscord();
+            if (tab == T_SKIN) init();
         } catch (Exception e) {
             PackTogglesClient.LOG.warn("Save skin failed", e);
             status = Component.literal("Save failed: " + e.getMessage());
@@ -908,47 +1039,6 @@ public class ToggleScreen extends Screen {
         } catch (Exception e) {
             status = Component.literal("Could not open the folder: " + skinDir());
         }
-    }
-
-    private void loadSkin() {
-        try {
-            Path dir = skinDir();
-            Files.createDirectories(dir);
-            List<Path> files = new ArrayList<>();
-            try (Stream<Path> s = Files.list(dir)) {
-                s.filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".png")).sorted().forEach(files::add);
-            }
-            if (files.isEmpty()) { status = Component.literal("Put a 64x64 skin PNG in the skin-studio folder of your game directory"); return; }
-            fileIdx = (fileIdx + 1) % files.size();
-            Path f = files.get(fileIdx);
-            BufferedImage img = ImageIO.read(f.toFile());
-            if (img == null || img.getWidth() != 64 || (img.getHeight() != 64 && img.getHeight() != 32)) {
-                status = Component.literal(f.getFileName() + " is not a 64x64 skin");
-                return;
-            }
-            pushUndo();
-            Arrays.fill(canvas, 0);
-            for (int y = 0; y < img.getHeight(); y++) for (int x = 0; x < 64; x++) canvas[y * 64 + x] = img.getRGB(x, y);
-            if (img.getHeight() == 32) { copyLimb(canvas, 0, 16, 16, 48); copyLimb(canvas, 40, 16, 32, 48); }
-            skinDirty = false;
-            skinChanged = true;
-            status = Component.literal("Loaded " + f.getFileName() + (img.getHeight() == 32 ? " (old 64x32 format, left limbs mirrored from the right)" : ""));
-        } catch (Exception e) {
-            PackTogglesClient.LOG.warn("Load skin failed", e);
-            status = Component.literal("Load failed: " + e.getMessage());
-        }
-    }
-
-    private void pushUndo() {
-        undo.add(canvas.clone());
-        if (undo.size() > 40) undo.remove(0);
-    }
-
-    private void undoSkin() {
-        if (undo.isEmpty()) { status = Component.literal("Nothing to undo"); return; }
-        canvas = undo.remove(undo.size() - 1);
-        skinDirty = true;
-        skinChanged = true;
     }
 
     private static void fillRect(int[] c, int x, int y, int w, int h, int col) {
@@ -980,6 +1070,13 @@ public class ToggleScreen extends Screen {
         c[14 * 64 + 11] = 0xFF8B4A2B; c[14 * 64 + 12] = 0xFF8B4A2B;
     }
 
+    /** Mirrors a 16x16 limb layout (used to rebuild the left arm/leg of old 64x32 skins). */
+    private static void copyLimb(int[] c, int su, int sv, int du, int dv) {
+        int[][] r = {{4, 0, 4, 4, 4, 0}, {8, 0, 4, 4, 8, 0}, {0, 4, 4, 12, 8, 4}, {4, 4, 4, 12, 4, 4}, {8, 4, 4, 12, 0, 4}, {12, 4, 4, 12, 12, 4}};
+        for (int[] q : r) for (int j = 0; j < q[3]; j++) for (int i = 0; i < q[2]; i++)
+            c[(dv + q[5] + j) * 64 + du + q[4] + i] = c[(sv + q[1] + j) * 64 + su + q[0] + (q[2] - 1 - i)];
+    }
+
     // ---------------- input ----------------
     @Override
     public boolean keyPressed(KeyEvent e) {
@@ -1000,14 +1097,13 @@ public class ToggleScreen extends Screen {
             }
             return super.keyPressed(e);
         }
-        if (ctrl && k == GLFW.GLFW_KEY_Z && tab == T_SKIN) { undoSkin(); return true; }
         if (k >= GLFW.GLFW_KEY_1 && k < GLFW.GLFW_KEY_1 + TABS.length) { setTab(k - GLFW.GLFW_KEY_1); return true; }
         if (k == GLFW.GLFW_KEY_L) { setLayout(layout + 1); return true; }
         if (k == GLFW.GLFW_KEY_TAB && layout == L_RADIAL) { radialOpen = !radialOpen; init(); return true; }
         return super.keyPressed(e);
     }
 
-    /** Polled each frame: painting, colour bars and preview rotation (no mouse event overrides needed). */
+    /** Polled each frame: sliders, colour picking and preview rotation (no mouse event overrides needed). */
     private void pollMouse(int mx, int my) {
         Minecraft mc = Minecraft.getInstance();
         int prevMx = lastMx;
@@ -1015,43 +1111,25 @@ public class ToggleScreen extends Screen {
         boolean left = mc.mouseHandler.isLeftPressed(), right = mc.mouseHandler.isRightPressed();
         boolean pressed = left || right, edge = pressed && !wasPressed;
         wasPressed = pressed;
-        if (!pressed) { canvasDrag = false; sliderDrag = -1; prevDrag = false; lastCx = -1; return; }
-        if (radialOpen || tabT < 0.5f) return;
+        if (!pressed) { sliderDrag = -1; prevDrag = false; return; }
+        if (radialOpen) return;
 
         if (tab == T_TRIMS) {
             if (edge && mx >= prevBox[0] && mx < prevBox[2] && my >= prevBox[1] && my < prevBox[3]) prevDrag = true;
             if (prevDrag) viewYaw = Math.max(-1.2f, Math.min(1.2f, viewYaw + (mx - prevMx) / 45f));
         } else if (tab == T_SKIN) {
-            int cvW = 64 * cs;
-            boolean inside = mx >= cvX && my >= cvY && mx < cvX + cvW && my < cvY + cvW;
-            if (edge) {
-                if (inside) {
-                    canvasDrag = true;
-                    lastCx = -1;
-                    if (tool == 0 || tool == 1) pushUndo();
+            if (edge && left) {
+                for (int i = 0; i < 4; i++) {
+                    int[] b = skinBar(i);
+                    if (mx >= b[0] - 2 && mx < b[0] + b[2] + 2 && my >= b[1] - 3 && my < b[1] + b[3] + 3) sliderDrag = i;
                 }
-                for (int i = 0; i < 3; i++) {
-                    int sy = yBars() + i * 14;
-                    if (mx >= rX + 12 && mx < rX + ctlW && my >= sy && my < sy + 10) sliderDrag = i;
-                }
+                if (sliderDrag < 0) tryPick(mx, my);
             }
-            if (sliderDrag >= 0 && sliderDrag < 3) {
-                int v = clampi(Math.round((mx - (rX + 12)) / (float) (ctlW - 12) * 255f), 0, 255);
-                int shift = 16 - 8 * sliderDrag;
-                curColor = 0xFF000000 | (curColor & ~(255 << shift) & 0xFFFFFF) | (v << shift);
-            }
-            if (canvasDrag && !inside) lastCx = -1;
-            if (canvasDrag && inside) {
-                int x = (mx - cvX) / cs, y = (my - cvY) / cs, idx = y * 64 + x;
-                if (tool == 3) {
-                    if (edge && (canvas[idx] >>> 24) != 0) curColor = canvas[idx] | 0xFF000000;
-                } else if (tool == 2) {
-                    if (edge && !right && USED[idx] && canvas[idx] != curColor) { pushUndo(); flood(x, y, curColor); skinDirty = true; skinChanged = true; }
-                } else {
-                    int nc = (right || tool == 1) ? 0 : curColor;
-                    if (lastCx < 0) stamp(x, y, nc); else line(lastCx, lastCy, x, y, nc);
-                    lastCx = x; lastCy = y;
-                }
+            if (sliderDrag >= 0 && sliderDrag < 4) {
+                int[] b = skinBar(sliderDrag);
+                float t = Math.max(0f, Math.min(1f, (mx - b[0]) / (float) b[2]));
+                int v = Math.round(RC_MIN[sliderDrag] + t * (RC_MAX[sliderDrag] - RC_MIN[sliderDrag]));
+                if (v != rc[sliderDrag]) { rc[sliderDrag] = v; recolor(); }
             }
         } else if (tab == T_SETTINGS && setChip == 3) {
             if (edge) {
@@ -1074,69 +1152,9 @@ public class ToggleScreen extends Screen {
         }
     }
 
-    private void stamp(int x, int y, int nc) {
-        for (int by = 0; by < brush; by++) {
-            for (int bx = 0; bx < brush; bx++) {
-                int xx = x - brush / 2 + bx, yy = y - brush / 2 + by;
-                if (xx < 0 || yy < 0 || xx > 63 || yy > 63) continue;
-                int ii = yy * 64 + xx;
-                if (USED[ii] && canvas[ii] != nc) { canvas[ii] = nc; skinDirty = true; skinChanged = true; }
-            }
-        }
-    }
-
-    private void line(int x0, int y0, int x1, int y1, int nc) {
-        int dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, err = dx + dy;
-        while (true) {
-            stamp(x0, y0, nc);
-            if (x0 == x1 && y0 == y1) break;
-            int e2 = 2 * err;
-            if (e2 >= dy) { err += dy; x0 += sx; }
-            if (e2 <= dx) { err += dx; y0 += sy; }
-        }
-    }
-
-    /** Mirrors a 16x16 limb layout (used to rebuild the left arm/leg of old 64x32 skins). */
-    private static void copyLimb(int[] c, int su, int sv, int du, int dv) {
-        int[][] r = {{4, 0, 4, 4, 4, 0}, {8, 0, 4, 4, 8, 0}, {0, 4, 4, 12, 8, 4}, {4, 4, 4, 12, 4, 4}, {8, 4, 4, 12, 0, 4}, {12, 4, 4, 12, 12, 4}};
-        for (int[] q : r) for (int j = 0; j < q[3]; j++) for (int i = 0; i < q[2]; i++)
-            c[(dv + q[5] + j) * 64 + du + q[4] + i] = c[(sv + q[1] + j) * 64 + su + q[0] + (q[2] - 1 - i)];
-    }
-
-    private void shade(int d) {
-        int r = clampi((curColor >> 16 & 255) + d, 0, 255), gr = clampi((curColor >> 8 & 255) + d, 0, 255), b = clampi((curColor & 255) + d, 0, 255);
-        curColor = 0xFF000000 | (r << 16) | (gr << 8) | b;
-    }
-
-    private void flood(int sx, int sy, int col) {
-        int target = canvas[sy * 64 + sx];
-        if (target == col) return;
-        ArrayDeque<Integer> stack = new ArrayDeque<>();
-        stack.push(sy * 64 + sx);
-        while (!stack.isEmpty()) {
-            int i = stack.pop(), x = i % 64, y = i / 64;
-            if (!USED[i] || canvas[i] != target) continue;
-            canvas[i] = col;
-            if (x > 0) stack.push(i - 1);
-            if (x < 63) stack.push(i + 1);
-            if (y > 0) stack.push(i - 64);
-            if (y < 63) stack.push(i + 64);
-        }
-    }
-
     // ---------------- skin textures ----------------
     private void ensureTextures() {
         TextureManager tm = Minecraft.getInstance().getTextureManager();
-        int size = 64 * cs;
-        if (canvasTex == null || canvasSize != size) {
-            if (canvasId != null) tm.release(canvasId);
-            canvasImg = new NativeImage(size, size, true);
-            canvasTex = new DynamicTexture(() -> "trimstudio canvas", canvasImg);
-            canvasId = Identifier.fromNamespaceAndPath("packtoggles", "studio/canvas");
-            tm.register(canvasId, canvasTex);
-            canvasSize = size;
-            texDirty = true;
-        }
         if (pvTex[0] == null || pvSize != pvScale) {
             for (int k = 0; k < 2; k++) {
                 if (pvId[k] != null) tm.release(pvId[k]);
@@ -1149,18 +1167,31 @@ public class ToggleScreen extends Screen {
             pvSize = pvScale;
             texDirty = true;
         }
+        if (headTex == null) {
+            headImg = new NativeImage(8 * HEAD_Z, 8 * HEAD_Z, true);
+            headTex = new DynamicTexture(() -> "trimstudio head", headImg);
+            headId = Identifier.fromNamespaceAndPath("packtoggles", "studio/head");
+            tm.register(headId, headTex);
+            texDirty = true;
+        }
+        int n = Math.max(1, files.size());
+        if (thumbTex == null || thumbN != n) {
+            if (thumbId != null) tm.release(thumbId);
+            thumbImg = new NativeImage(16, 16 * n, true);
+            thumbTex = new DynamicTexture(() -> "trimstudio thumbs", thumbImg);
+            thumbId = Identifier.fromNamespaceAndPath("packtoggles", "studio/thumbs");
+            tm.register(thumbId, thumbTex);
+            thumbN = n;
+            thumbsDirty = true;
+        }
+    }
+
+    private static int face(int[] c, int x, int y) {
+        return over(over(0xFF2E2626, c[(8 + y) * 64 + 8 + x]), c[(8 + y) * 64 + 40 + x]) | 0xFF000000;
     }
 
     private void rebuildTextures() {
         texDirty = false;
-        int s = cs;
-        for (int i = 0; i < 64 * 64; i++) {
-            int x = i % 64, y = i / 64;
-            int bg = USED[i] ? ((((x + y) & 1) == 0) ? 0xFF3A3030 : 0xFF2E2626) : 0xFF171212;
-            int out = over(bg, canvas[i]) | 0xFF000000;
-            for (int dy = 0; dy < s; dy++) for (int dx = 0; dx < s; dx++) canvasImg.setPixel(x * s + dx, y * s + dy, out);
-        }
-        canvasTex.upload();
         for (int k = 0; k < 2; k++) {
             int[] buf = new int[16 * 32];
             int[][] parts = k == 1 ? BACK : FRONT;
@@ -1184,17 +1215,40 @@ public class ToggleScreen extends Screen {
             }
             pvTex[k].upload();
         }
+        for (int y = 0; y < 8; y++) {
+            for (int x = 0; x < 8; x++) {
+                int c = face(canvas, x, y);
+                for (int dy = 0; dy < HEAD_Z; dy++) for (int dx = 0; dx < HEAD_Z; dx++) headImg.setPixel(x * HEAD_Z + dx, y * HEAD_Z + dy, c);
+            }
+        }
+        headTex.upload();
+    }
+
+    private void rebuildThumbs() {
+        thumbsDirty = false;
+        for (int i = 0; i < thumbN; i++) {
+            int[] px = i < files.size() ? files.get(i).px() : null;
+            for (int y = 0; y < 8; y++) {
+                for (int x = 0; x < 8; x++) {
+                    int c = px != null ? face(px, x, y) : ((x == y || x == 7 - y) ? 0xFFE0564F : 0xFF2E2626);
+                    for (int dy = 0; dy < 2; dy++) for (int dx = 0; dx < 2; dx++) thumbImg.setPixel(x * 2 + dx, i * 16 + y * 2 + dy, c);
+                }
+            }
+        }
+        thumbTex.upload();
     }
 
     private void releaseTextures() {
         TextureManager tm = Minecraft.getInstance().getTextureManager();
-        if (canvasId != null) tm.release(canvasId);
-        canvasId = null; canvasTex = null; canvasImg = null; canvasSize = 0;
         for (int k = 0; k < 2; k++) {
             if (pvId[k] != null) tm.release(pvId[k]);
             pvId[k] = null; pvTex[k] = null; pvImg[k] = null;
         }
         pvSize = 0;
+        if (headId != null) tm.release(headId);
+        headId = null; headTex = null; headImg = null;
+        if (thumbId != null) tm.release(thumbId);
+        thumbId = null; thumbTex = null; thumbImg = null; thumbN = 0;
     }
 
     @Override
@@ -1243,9 +1297,19 @@ public class ToggleScreen extends Screen {
     }
 
     // ---------------- drawing ----------------
-    private net.minecraft.world.entity.player.PlayerSkin skin() {
+    private PlayerSkin skin() {
         Minecraft mc = Minecraft.getInstance();
         return mc.player != null ? mc.player.getSkin() : DefaultPlayerSkin.get(mc.getUser().getProfileId());
+    }
+
+    /** Skin of a chat sender: the real one while they are in the tab list, otherwise the default skin for their UUID. */
+    private static PlayerSkin skinFor(UUID id) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.getConnection() != null) {
+            PlayerInfo info = mc.getConnection().getPlayerInfo(id);
+            if (info != null) return info.getSkin();
+        }
+        return DefaultPlayerSkin.get(id);
     }
 
     private void icon(GuiGraphics g, int i, int x, int y, int c, int bgc) {
@@ -1304,9 +1368,11 @@ public class ToggleScreen extends Screen {
         }
         if (tab == T_TRIMS && equipDirty) { equipDirty = false; equip(); }
         if (tab == T_SKIN) {
+            ensureSkin();
             if (skinChanged) { skinChanged = false; texDirty = true; }
             ensureTextures();
             if (texDirty) rebuildTextures();
+            if (thumbsDirty) rebuildThumbs();
         }
 
         super.render(g, mx, my, partial);
@@ -1339,7 +1405,7 @@ public class ToggleScreen extends Screen {
         try {
             switch (tab) {
                 case T_WARDROBE -> drawWardrobe(g);
-                case T_SKIN -> drawSkin(g, mx, my);
+                case T_SKIN -> drawSkin(g);
                 case T_DISCORD -> drawDiscord(g, mx, my);
                 case T_CHAT -> drawChat(g, mx, my);
                 case T_SETTINGS -> drawSettings(g);
@@ -1521,7 +1587,7 @@ public class ToggleScreen extends Screen {
 
     private void drawBottom(GuiGraphics g) {
         String msg = status.getString();
-        if (msg.isEmpty()) msg = tab == T_SKIN ? "Left click paints, right click erases  |  Ctrl+Z undo" : "1-5 tabs  |  L layout  |  Ctrl+K search";
+        if (msg.isEmpty()) msg = tab == T_SKIN ? "Click a skin to load it  |  click the head or preview to pick a color" : "1-6 tabs  |  L layout  |  Ctrl+K search";
         text(g, fit(msg, cw - applyW - 16), cx + 2, applyY + 8, muted());
         float h = ease("applyhov", hov("apply") ? 1 : 0, 14);
         round(g, applyX - 1, applyY - 1, applyW + 2, applyH + 2, alpha(cAccent2, 0.25f * h));
@@ -1621,59 +1687,82 @@ public class ToggleScreen extends Screen {
     }
 
     // ---- skin tab ----
-    private void drawSkin(GuiGraphics g, int mx, int my) {
-        int dx = cx - baseCx;
-        int cvW = 64 * cs, ox = cvX + dx, oy = cvY;
-        card(g, ox - 3, oy - 3, cvW + 6, cvW + 6);
-        if (canvasId != null) g.blit(RenderPipelines.GUI_TEXTURED, canvasId, ox, oy, 0f, 0f, cvW, cvW, cvW, cvW);
-        if (mx >= cvX && my >= cvY && mx < cvX + cvW && my < cvY + cvW) {
-            int cellX = (mx - cvX) / cs, cellY = (my - cvY) / cs;
-            int n = (tool == 0 || tool == 1) ? brush : 1;
-            int hx = ox + (cellX - n / 2) * cs, hy = oy + (cellY - n / 2) * cs, sz = n * cs;
-            g.fill(hx, hy, hx + sz, hy + 1, cAccent2); g.fill(hx, hy + sz - 1, hx + sz, hy + sz, cAccent2);
-            g.fill(hx, hy, hx + 1, hy + sz, cAccent2); g.fill(hx + sz - 1, hy, hx + sz, hy + sz, cAccent2);
+    private void drawSkin(GuiGraphics g) {
+        int dx = cx - baseCx, h = bottom - top;
+
+        // skin list
+        card(g, cx, top, sListW, h);
+        bold(g, "Skins", cx + 8, top + 6, TEXT);
+        int pages = Math.max(1, (files.size() + sRows - 1) / sRows);
+        String pg = (sPage + 1) + "/" + pages;
+        text(g, pg, cx + sListW - 50 - font.width(pg), top + 6, muted());
+        chip(g, "sprev", new int[]{cx + sListW - 46, top + 2, 18, 16}, "<", 0, cAccent);
+        chip(g, "snext", new int[]{cx + sListW - 24, top + 2, 18, 16}, ">", 0, cAccent);
+        if (files.isEmpty()) {
+            text(g, fit("No PNGs yet. Put 64x64", sListW - 16), cx + 8, top + 26, muted());
+            text(g, fit("skins in skin-studio,", sListW - 16), cx + 8, top + 38, muted());
+            text(g, fit("then press Refresh.", sListW - 16), cx + 8, top + 50, muted());
+        }
+        int selFg = lum(cAccent) > 140 ? 0xFF111111 : 0xFFFFFFFF;
+        for (int i = 0; i < sRows; i++) {
+            int idx = sPage * sRows + i;
+            if (idx >= files.size()) break;
+            SkinFile f = files.get(idx);
+            int ry = top + 22 + i * 20, rdx = (int) ((1f - stag(i)) * 16 * tabDir);
+            float hv = ease("srowhov" + i, hov("srow" + i) ? 1 : 0, 14);
+            boolean sel = idx == selIdx;
+            if (sel) round(g, cx + 4 + rdx, ry, sListW - 8, 18, alpha(cAccent, 0.9f));
+            else if (hv > 0.02f) round(g, cx + 4 + rdx, ry, sListW - 8, 18, alpha(cAccent, 0.15f * hv));
+            if (thumbId != null && idx < thumbN) g.blit(RenderPipelines.GUI_TEXTURED, thumbId, cx + 7 + rdx, ry + 1, 0f, idx * 16f, 16, 16, 16, 16 * thumbN);
+            int fg = f.px() == null ? RED : sel ? selFg : TEXT;
+            text(g, fit(f.name(), sListW - 38), cx + 28 + rdx, ry + 5, fg);
         }
 
-        int rx = rX + dx;
-        int tw = (ctlW - 3 * 4) / 4;
-        for (int i = 0; i < 4; i++) chip(g, "tool" + i, new int[]{rx + i * (tw + 4), top, tw, 16}, TOOLS[i], tool == i ? 1 : 0, cAccent);
-        int bw3 = (ctlW - 2 * 4) / 3;
-        for (int i = 0; i < 3; i++) chip(g, "brush" + i, new int[]{rx + i * (bw3 + 4), yBrush(), bw3, 16}, BRUSHES[i], brush == i + 1 ? 1 : 0, cAccent2);
+        // front / back preview
+        int pvW = 16 * pvScale, pvH = 32 * pvScale, ox = pvX + dx, pvY = top + 3;
+        card(g, ox - 3, top, 2 * pvW + 8 + 6, pvH + 20);
+        if (pvId[0] != null) g.blit(RenderPipelines.GUI_TEXTURED, pvId[0], ox, pvY, 0f, 0f, pvW, pvH, pvW, pvH);
+        if (pvId[1] != null) g.blit(RenderPipelines.GUI_TEXTURED, pvId[1], ox + pvW + 8, pvY, 0f, 0f, pvW, pvH, pvW, pvH);
+        text(g, "Front", ox + (pvW - font.width("Front")) / 2, pvY + pvH + 4, muted());
+        text(g, "Back", ox + pvW + 8 + (pvW - font.width("Back")) / 2, pvY + pvH + 4, muted());
 
-        String[] ch = {"R", "G", "B"};
-        for (int i = 0; i < 3; i++) {
-            int sy = yBars() + i * 14, shift = 16 - 8 * i, v = curColor >> shift & 255;
-            text(g, ch[i], rx, sy + 1, muted());
-            int bx = rx + 12, bw = ctlW - 12;
-            g.fill(bx, sy + 1, bx + bw, sy + 9, mix(cCard, cBg, 0.6f));
-            g.fill(bx, sy + 1, bx + Math.round(bw * v / 255f), sy + 9, i == 0 ? 0xFFE0564F : i == 1 ? 0xFF58D26F : 0xFF378ADD);
-            int kx = bx + Math.round((bw - 3) * v / 255f);
-            g.fill(kx, sy, kx + 3, sy + 10, 0xFFFFFFFF);
-        }
-        round(g, rx, yHex(), 22, 16, curColor);
-        String hexStr = String.format("#%06X", curColor & 0xFFFFFF);
-        if (hexBox != null) {
-            if (!hexBox.isFocused() && !hexBox.getValue().equalsIgnoreCase(hexStr)) { building = true; hexBox.setValue(hexStr); building = false; }
-            field(g, hexBox, rx + 23, yHex(), 62, "", mx, my);
+        // head zoom + info
+        int x = ctlX + dx, hs = 8 * HEAD_Z;
+        card(g, x - 2, top, hs + 4, hs + 4);
+        if (headId != null) g.blit(RenderPipelines.GUI_TEXTURED, headId, x, top + 2, 0f, 0f, hs, hs, hs, hs);
+        int ix = x + hs + 8, iw = ctlW - hs - 8;
+        bold(g, fit(skinName, iw), ix, top + 4, TEXT);
+        text(g, fit(skinDirty ? "Recolored, not saved" : "Original colors", iw), ix, top + 17, skinDirty ? AMBER : muted());
+        text(g, fit("Click the head or", iw), ix, top + 30, muted());
+        text(g, fit("preview to pick a color", iw), ix, top + 41, muted());
+
+        // sliders
+        for (int i = 0; i < 4; i++) {
+            int[] b = skinBar(i);
+            int bx = b[0] + dx, by = b[1];
+            text(g, RC_NAMES[i], x, by, muted());
+            float t = (rc[i] - RC_MIN[i]) / (float) (RC_MAX[i] - RC_MIN[i]);
+            boolean dim = i == 3 && !pickMode;
+            g.fill(bx, by, bx + b[2], by + b[3], mix(cCard, cBg, 0.6f));
+            g.fill(bx, by, bx + Math.round(b[2] * t), by + b[3], dim ? mix(cCard, TEXT, 0.2f) : cAccent);
+            int kx = bx + Math.round((b[2] - 3) * t);
+            g.fill(kx, by - 1, kx + 3, by + b[3] + 1, 0xFFFFFFFF);
+            String val = i == 0 ? rc[i] + "\u00B0" : i == 2 ? (rc[i] > 0 ? "+" : "") + rc[i] : rc[i] + "%";
+            text(g, val, bx + b[2] + 6, by, dim ? muted() : TEXT);
         }
 
-        for (int i = 0; i < 16; i++) {
-            int sx = rx + (i % 8) * (palSw + 3), sy = yPal() + (i / 8) * (palSw + 3);
-            boolean sel = (PALETTE[i] & 0xFFFFFF) == (curColor & 0xFFFFFF);
-            round(g, sx - 1, sy - 1, palSw + 2, palSw + 2, sel ? 0xFFFFFFFF : hov("pal" + i) ? mix(cLine, TEXT, 0.5f) : cLine);
-            g.fill(sx, sy, sx + palSw, sy + palSw, PALETTE[i]);
-        }
-        int by = yPal() + 2 * (palSw + 3) + 6, bw = (ctlW - 4) / 2;
-        String[] bl = {"Undo", "Template", "Load next", "Clear", "Open folder", "To Discord", "Darker", "Lighter"};
-        String[] bk = {"undo", "tmpl", "load", "clear", "folder", "sdisc", "dark", "light"};
-        for (int i = 0; i < 8; i++) chip(g, bk[i], new int[]{rx + (i % 2) * (bw + 4), by + (i / 2) * 22, bw, 18}, bl[i], 0, cAccent);
+        // target
+        int w2 = (ctlW - 20) / 2;
+        chip(g, "smode0", new int[]{x, yMode(), w2, 16}, "Whole skin", pickMode ? 0 : 1, cAccent);
+        chip(g, "smode1", new int[]{x + w2 + 4, yMode(), w2, 16}, "Picked color", pickMode ? 1 : 0, cAccent);
+        round(g, x + 2 * w2 + 8, yMode() + 2, 12, 12, cLine);
+        g.fill(x + 2 * w2 + 9, yMode() + 3, x + 2 * w2 + 19, yMode() + 13, pickColor);
 
-        int pvx = rx + ctlW + 8, pvW = 16 * pvScale, pvH = 32 * pvScale;
-        card(g, pvx - 3, top - 3, 2 * pvW + 8 + 6, pvH + 22);
-        if (pvId[0] != null) g.blit(RenderPipelines.GUI_TEXTURED, pvId[0], pvx, top, 0f, 0f, pvW, pvH, pvW, pvH);
-        if (pvId[1] != null) g.blit(RenderPipelines.GUI_TEXTURED, pvId[1], pvx + pvW + 8, top, 0f, 0f, pvW, pvH, pvW, pvH);
-        text(g, "Front", pvx + (pvW - font.width("Front")) / 2, top + pvH + 5, muted());
-        text(g, "Back", pvx + pvW + 8 + (pvW - font.width("Back")) / 2, top + pvH + 5, muted());
+        // actions
+        int bw = (ctlW - 4) / 2;
+        for (int i = 0; i < SKIN_BTNS.length; i++) {
+            chip(g, "sb" + i, new int[]{x + (i % 2) * (bw + 4), yBtn() + (i / 2) * 22, bw, 18}, SKIN_BTNS[i], 0, cAccent);
+        }
     }
 
     // ---- discord tab ----
@@ -1730,20 +1819,28 @@ public class ToggleScreen extends Screen {
         optionRow(g, 12, cx + 6, top + 60, lw - 12, "Log all chat to Discord", null, DiscordBot.logChat);
         optionRow(g, 13, cx + 6, top + 78, lw - 12, "Allow !say from Discord", null, DiscordBot.sayOn);
         optionRow(g, 14, cx + 6, top + 96, lw - 12, "Hourly chat file (in game only)", null, DiscordBot.hourly);
+        optionRow(g, 15, cx + 6, top + 114, lw - 12, "Show player heads in Discord", null, DiscordBot.chatEmbeds);
         int bw = (fw - 4) / 2;
-        chip(g, "clog", new int[]{fx0, top + 124, bw, 18}, "Send log now", 0, cAccent);
-        chip(g, "ctest", new int[]{fx0 + bw + 4, top + 124, bw, 18}, "Test message", 0, cAccent);
+        chip(g, "clog", new int[]{fx0, top + 142, bw, 18}, "Send log now", 0, cAccent);
+        chip(g, "ctest", new int[]{fx0 + bw + 4, top + 142, bw, 18}, "Test message", 0, cAccent);
         boolean on = DiscordBot.isRunning();
-        text(g, fit(on ? "Bot is online" : "Connect the bot on the Discord tab first", lw - 20), cx + 10, top + 150, on ? GREEN : muted());
+        text(g, fit(on ? "Bot is online" : "Connect the bot on the Discord tab first", lw - 20), cx + 10, top + 168, on ? GREEN : muted());
 
         int rx = cx + lw + 8, rw = cw - lw - 8, rh = bottom - top;
         card(g, rx, top, rw, rh);
         bold(g, "Recent chat", rx + 10, top + 7, TEXT);
-        List<String> lines = ChatBridge.recent();
+        List<ChatBridge.Line> lines = ChatBridge.recent();
         int n = Math.max(1, (rh - 64) / 10);
         int start = Math.max(0, lines.size() - n);
         if (lines.isEmpty()) text(g, "Nothing yet", rx + 10, top + 22, muted());
-        for (int i = start; i < lines.size(); i++) text(g, fit(lines.get(i), rw - 20), rx + 10, top + 22 + (i - start) * 10, TEXT);
+        for (int i = start; i < lines.size(); i++) {
+            ChatBridge.Line l = lines.get(i);
+            int ly = top + 22 + (i - start) * 10;
+            if (l.id() != null) {
+                try { PlayerFaceRenderer.draw(g, skinFor(l.id()), rx + 10, ly, 8); } catch (Exception ignored) { }
+            }
+            text(g, fit(l.plain(), rw - 31), rx + 21, ly, l.id() != null ? TEXT : muted());
+        }
         int hy = top + rh - 34;
         text(g, fit("In the chat channel: !say <message>", rw - 20), rx + 10, hy, muted());
         text(g, fit("says it in game as you (no / commands).", rw - 20), rx + 10, hy + 11, muted());
