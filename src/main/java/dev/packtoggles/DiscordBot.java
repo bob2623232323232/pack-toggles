@@ -31,7 +31,7 @@ import java.util.Locale;
 public final class DiscordBot {
     static volatile String token = "", channelId = "", userId = "", chatChannelId = "";
     static volatile boolean listen = true, autoPost = false, relay = false;
-    static volatile boolean logChat = false, hourly = false, sayOn = true;
+    static volatile boolean logChat = false, hourly = false, sayOn = true, chatEmbeds = true;
 
     private static volatile boolean running = false;
     private static volatile String status = "Offline";
@@ -98,12 +98,29 @@ public final class DiscordBot {
         return o;
     }
 
-    private static void postTo(String channel, String content) throws Exception {
-        HttpResponse<String> r = HTTP.send(req("/channels/" + channel.trim() + "/messages")
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(payload(content).toString())).build(), HttpResponse.BodyHandlers.ofString());
-        if (r.statusCode() / 100 != 2) throw new Exception("HTTP " + r.statusCode() + " while sending");
+    /** How long Discord asked us to wait after a 429, in ms. */
+    private static long retryMs(String body) {
+        try {
+            double s = JsonParser.parseString(body).getAsJsonObject().get("retry_after").getAsDouble();
+            return Math.min(30000L, (long) (s * 1000) + 250L);
+        } catch (Exception e) {
+            return 2000L;
+        }
     }
+
+    /** Sends a JSON message, waiting and retrying (twice at most) when rate limited. */
+    private static void sendJson(String channel, JsonObject body) throws Exception {
+        for (int attempt = 0; ; attempt++) {
+            HttpResponse<String> r = HTTP.send(req("/channels/" + channel.trim() + "/messages")
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(body.toString())).build(), HttpResponse.BodyHandlers.ofString());
+            if (r.statusCode() == 429 && attempt < 2) { Thread.sleep(retryMs(r.body())); continue; }
+            if (r.statusCode() / 100 != 2) throw new Exception("HTTP " + r.statusCode() + " while sending");
+            return;
+        }
+    }
+
+    private static void postTo(String channel, String content) throws Exception { sendJson(channel, payload(content)); }
 
     private static void post(String content) throws Exception { postTo(channelId, content); }
 
@@ -128,6 +145,14 @@ public final class DiscordBot {
     static boolean chatReady() { return !token.isBlank() && !chatChannelId.isBlank(); }
 
     static void postChat(String content) throws Exception { postTo(chatChannelId, content); }
+
+    /** Up to 10 embeds in one message (one request), still with mentions disabled. */
+    static void postChatEmbeds(JsonArray embeds) throws Exception {
+        JsonObject o = payload("");
+        o.remove("content");
+        o.add("embeds", embeds);
+        sendJson(chatChannelId, o);
+    }
 
     static void postChatFile(String content, String name, byte[] data) throws Exception {
         postFileTo(chatChannelId, content, name, data, "text/plain");
@@ -192,7 +217,7 @@ public final class DiscordBot {
     private static void poll() throws Exception {
         String path = "/channels/" + channelId.trim() + "/messages?limit=" + (lastId == null ? 1 : 20) + (lastId == null ? "" : "&after=" + lastId);
         HttpResponse<String> r = HTTP.send(req(path).GET().build(), HttpResponse.BodyHandlers.ofString());
-        if (r.statusCode() == 429) { Thread.sleep(3000); return; }
+        if (r.statusCode() == 429) { Thread.sleep(retryMs(r.body())); return; }
         if (r.statusCode() != 200) { log("Could not read the channel: HTTP " + r.statusCode()); Thread.sleep(6000); return; }
         JsonArray arr = JsonParser.parseString(r.body()).getAsJsonArray();
         if (lastId == null) {
@@ -221,7 +246,7 @@ public final class DiscordBot {
         String ch = chatChannelId.trim();
         String path = "/channels/" + ch + "/messages?limit=" + (lastChatId == null ? 1 : 20) + (lastChatId == null ? "" : "&after=" + lastChatId);
         HttpResponse<String> r = HTTP.send(req(path).GET().build(), HttpResponse.BodyHandlers.ofString());
-        if (r.statusCode() == 429) { Thread.sleep(3000); return; }
+        if (r.statusCode() == 429) { Thread.sleep(retryMs(r.body())); return; }
         if (r.statusCode() != 200) { log("Could not read the chat channel: HTTP " + r.statusCode()); Thread.sleep(6000); return; }
         JsonArray arr = JsonParser.parseString(r.body()).getAsJsonArray();
         if (lastChatId == null) {
